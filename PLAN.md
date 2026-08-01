@@ -19,7 +19,7 @@ One phase per session. At the start of each: *"Read PLAN.md and CLAUDE.md, we're
 | Orchestration | LangGraph / LangChain 1.x |
 | Vector DB | Qdrant (Docker) |
 | Embeddings | HF `sentence-transformers` |
-| Generation | Claude API |
+| Generation | LLM provider (OpenAI by default, swappable via LLM_PROVIDER) |
 | Backend | FastAPI |
 | Detection | perplexity (small HF causal LM) + scikit-learn/faiss cluster anomaly + optional HF classifier |
 | Faithfulness | HF NLI cross-encoder |
@@ -102,10 +102,13 @@ huggingface-cli login
 
 Create `.env` in the repo root (already gitignored):
 ```
+LLM_PROVIDER=openai
+OPENAI_API_KEY=sk-...
 ANTHROPIC_API_KEY=sk-ant-...
 HF_TOKEN=hf_...
 QDRANT_URL=http://localhost:6333
 ```
+`LLM_PROVIDER` selects which key `src/generation/llm_client.py` uses ("openai" or "anthropic") — see the full `.env.example` for every overridable var.
 
 ### 2.9 Drop in the project files
 
@@ -235,10 +238,12 @@ python eval/run_eval.py --stage retrieval --compare-baseline
 **Claude Code prompt**
 ```
 Implement Phase 5: src/generation/generate.py as a LangGraph node calling
-Claude with gated context, src/generation/faithfulness.py doing an NLI
-check per generated claim, eval/run_eval.py producing the full ASR /
-precision / F1 / latency report, and a FastAPI /query endpoint in
-src/api/main.py wiring the whole loop end-to-end.
+the configured LLM provider (OpenAI by default, swappable via LLM_PROVIDER
+— see src/generation/llm_client.py) with gated context,
+src/generation/faithfulness.py doing an NLI check per generated claim,
+eval/run_eval.py producing the full ASR / precision / F1 / latency report,
+and a FastAPI /query endpoint in src/api/main.py wiring the whole loop
+end-to-end.
 ```
 
 **Verify**

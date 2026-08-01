@@ -17,6 +17,7 @@ Check `PROGRESS.md` for what's done and what's outstanding. Don't start a new ph
 - Tests go in `tests/`, mirroring the `src/` layout. Every new module gets at least a sanity test.
 - All randomness in `eval/` and synthetic-data generation must be seeded — reproducibility matters more than elegance here.
 - **Never hand-roll cryptography.** Signing, hashing, and verification go through the `cryptography` package only. Flag it and ask before implementing any crypto-adjacent logic a different way.
+- **LLM provider is config-driven, not hardcoded.** Generation code goes through `src/generation/llm_client.py`'s `get_llm()`, which reads `LLM_PROVIDER` (default `openai`) and returns the matching LangChain chat model. Don't import `langchain_openai`/`langchain_anthropic`/a provider SDK directly elsewhere — call `get_llm()` instead, so switching providers is an env var change, not a code change.
 - Don't hardcode thresholds (trust scores, ASR targets, detection cutoffs) — read them from config so they can be swept for the cost-accuracy frontier report in Phase 9.
 - No secrets, API keys, or credentials in code or commits. Use `.env` (already gitignored) and `python-dotenv`.
 

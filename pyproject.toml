@@ -15,8 +15,10 @@ dependencies = [
     "qdrant-client",
     # Embeddings
     "sentence-transformers",
-    # Generation
+    # Generation (provider-agnostic via src/generation/llm_client.py)
     "anthropic",
+    "langchain-openai",
+    "langchain-anthropic",
     # Backend API
     "fastapi",
     "uvicorn[standard]",
