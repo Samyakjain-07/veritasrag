@@ -20,6 +20,10 @@ Check `PROGRESS.md` for what's done and what's outstanding. Don't start a new ph
 - Don't hardcode thresholds (trust scores, ASR targets, detection cutoffs) — read them from config so they can be swept for the cost-accuracy frontier report in Phase 9.
 - No secrets, API keys, or credentials in code or commits. Use `.env` (already gitignored) and `python-dotenv`.
 
+## Environment notes
+
+- WSL2's `/tmp` is a small tmpfs — `TMPDIR` is set to `~/tmp` in `.bashrc` to avoid "No space left on device" during large pip installs.
+
 ## Working style for this project
 
 - Work within the scope of the current phase in `PLAN.md`. If something outside that phase's scope seems necessary, flag it rather than silently expanding scope.

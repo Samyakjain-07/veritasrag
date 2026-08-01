@@ -25,3 +25,26 @@
 - Reproducibility: two runs with the same seed produced a byte-identical `poison_manifest.json`.
 - `pytest tests/`: **11 passed**, 0 failed.
 - `ruff check` / `ruff format --check`: clean across `src/`, `eval/`, `tests/`.
+
+## Phase 2 — Embeddings & vector DB with trust-tier schema — DONE
+
+- `src/ingestion/provenance.py`: Ed25519 content-hash signing, entirely through the `cryptography` package (hashing via `hashes.Hash`, not `hashlib`, per `CLAUDE.md`). `ProvenanceSigner` loads/generates one project-wide keypair persisted under `keys/` (now gitignored — private key material, unencrypted PKCS8 PEM, fine for local dev only). `verify_signature` hardened to return `False` (not raise) on malformed/corrupted signature data.
+- `src/embeddings/embedder.py`: `Embedder` wraps `sentence-transformers`, default model `BAAI/bge-small-en-v1.5` (384-dim), overridable via `EMBEDDING_MODEL_NAME` env var.
+- `src/vectorstore/schema.py`: `TrustTier` enum (`verified`/`unverified`/`quarantined`) + `build_payload()` for the collection's payload fields.
+- `src/vectorstore/qdrant_client.py`: collection lifecycle (`ensure_collection`), deterministic UUID5 point IDs (idempotent re-upserts), `upsert_manifest()` batch pipeline, `verify_sample()` (checks signature validity *and* that the stored hash reproduces from the stored text). CLI: `python -m src.vectorstore.qdrant_client upsert|verify`.
+- **Design decisions (flagging per `CLAUDE.md`):**
+  - `trust_tier` is **not** derived from the Phase 1 manifest's `is_poisoned` ground-truth label — every chunk is upserted as `unverified`. Copying the label in would make the Phase 3 detector eval circular (trivially "detecting" a value it was told). Confirmed live: the Qdrant payload never contains `is_poisoned`.
+  - Payload also stores a `text` field beyond the 7 schema fields listed in the phase prompt (`doc_id`, `chunk_id`, `source_uri`, `trust_tier`, `provenance_signature`, `ingested_at`, `content_hash`) — without chunk text, later retrieval/generation phases would have nothing to feed the LLM.
+- Dependencies newly installed into `.venv`: `qdrant-client`, `cryptography`, `sentence-transformers` (pulls `torch`, `transformers`). Hit `TMPDIR`/disk-space issue installing `sentence-transformers` (see below), resolved by pointing `TMPDIR` at the real disk instead of the small `/tmp` tmpfs.
+- Tests: `tests/ingestion/test_provenance.py`, `tests/embeddings/test_embedder.py`, `tests/vectorstore/test_schema.py`, `tests/vectorstore/test_qdrant_client.py` (real integration test against `localhost:6333` using a disposable scratch collection, auto-skips if Qdrant isn't reachable) — 16 new tests, all passing.
+
+### Eval numbers (this session)
+
+- `python -m src.vectorstore.qdrant_client upsert` → **280/280** Phase 1 chunks embedded, signed, and upserted into collection `veritasrag_chunks` (384-dim, cosine distance).
+- `python -m src.vectorstore.qdrant_client verify --sample-size 8` → **8/8** sampled signatures valid, content-hash-matches-text confirmed for all.
+- `pytest tests/`: **27 passed**, 0 failed (11 from Phase 1 + 16 new).
+- `ruff check` / `ruff format --check`: clean across `src/`, `eval/`, `tests/`.
+
+### Infra note
+
+- In this WSL2 environment, `/tmp` is a 1.9GB tmpfs; pip's default download temp dir lives there and a large wheel (`torch`, 423MB) can exhaust it mid-download (`[Errno 28] No space left on device`) even though the real disk (`/dev/sdd`) has ~950GB free. Fix: set `TMPDIR` to a directory on the real disk (used `/home/lenovo/.pip_tmp`) before `pip install` for any future heavy package installs (e.g. Phase 3's `faiss-cpu`/`transformers` pipelines).
