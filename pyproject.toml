@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "veritasrag"
+version = "0.1.0"
+description = "Trustworthy RAG integrity layer: poisoning detection, cryptographic provenance, and verifiable unlearning."
+requires-python = ">=3.11"
+dependencies = [
+    # Orchestration
+    "langgraph",
+    "langchain",
+    # Vector database
+    "qdrant-client",
+    # Embeddings
+    "sentence-transformers",
+    # Generation
+    "anthropic",
+    # Backend API
+    "fastapi",
+    "uvicorn[standard]",
+    # Poison detection
+    "transformers",
+    "scikit-learn",
+    "faiss-cpu",
+    # Provenance & crypto
+    "cryptography",
+    # Evaluation
+    "ragas",
+    "datasets",
+    # Observability
+    "opentelemetry-api",
+    "opentelemetry-sdk",
+    # Dashboard
+    "streamlit",
+    # Config
+    "python-dotenv",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "eval", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
