@@ -1,0 +1,59 @@
+{
+  "manifest_path": "eval/benchmarks/poison_manifest.json",
+  "n_chunks": 280,
+  "n_poisoned": 60,
+  "config": {
+    "perplexity_model_name": "distilgpt2",
+    "perplexity_low_anchor": 20.0,
+    "perplexity_high_anchor": 120.0,
+    "perplexity_threshold": 60.0,
+    "cluster_knn_k": 5,
+    "cluster_dbscan_eps": 0.25,
+    "cluster_dbscan_min_samples": 2,
+    "cluster_knn_weight": 0.5,
+    "cluster_dbscan_weight": 0.5,
+    "cluster_anomaly_threshold": 0.5,
+    "classifier_seed": 42,
+    "classifier_n_splits": 5,
+    "classifier_threshold": 0.5,
+    "fusion_perplexity_weight": 0.25,
+    "fusion_cluster_weight": 0.15,
+    "fusion_classifier_weight": 0.6,
+    "poison_score_threshold": 0.5,
+    "openai_judge_model": "gpt-5.4-mini",
+    "judge_threshold": 0.5,
+    "judge_max_workers": 6
+  },
+  "metrics": {
+    "perplexity": {
+      "precision": 0.42857142857142855,
+      "recall": 0.8,
+      "f1": 0.5581395348837209,
+      "n": 280
+    },
+    "cluster_anomaly": {
+      "precision": 0.24691358024691357,
+      "recall": 0.6666666666666666,
+      "f1": 0.36036036036036034,
+      "n": 280
+    },
+    "classifier_cv": {
+      "precision": 0.9180327868852459,
+      "recall": 0.9333333333333333,
+      "f1": 0.9256198347107438,
+      "n": 280
+    },
+    "fused_pipeline": {
+      "precision": 0.9180327868852459,
+      "recall": 0.9333333333333333,
+      "f1": 0.9256198347107438,
+      "n": 280
+    },
+    "llm_judge": {
+      "precision": 0.967741935483871,
+      "recall": 1.0,
+      "f1": 0.9836065573770492,
+      "n": 280
+    }
+  }
+}

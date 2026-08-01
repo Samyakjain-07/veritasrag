@@ -24,6 +24,9 @@ dependencies = [
     "transformers",
     "scikit-learn",
     "faiss-cpu",
+    "joblib",
+    # LLM-as-judge baseline
+    "openai",
     # Provenance & crypto
     "cryptography",
     # Evaluation

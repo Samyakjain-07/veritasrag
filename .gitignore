@@ -20,6 +20,12 @@ env/
 !.env.example
 keys/
 
+# Trained model artifacts
+models/
+
+# LLM-judge dev cache
+eval/benchmarks/.judge_cache.json
+
 # Test / lint / type-check caches
 .pytest_cache/
 .ruff_cache/
