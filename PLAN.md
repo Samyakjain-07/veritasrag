@@ -203,7 +203,7 @@ Implement Phase 3: perplexity scoring (src/detection/perplexity.py),
 embedding-space cluster anomaly detection (src/detection/cluster_anomaly.py),
 an optional fine-tuned classifier (src/detection/classifier.py), fused into
 a poison_score per chunk in src/detection/pipeline.py. Add an LLM-as-judge
-baseline via the Claude API. Evaluate both against the Phase 1 manifest and
+baseline via the open_ai API. Evaluate both against the Phase 1 manifest and
 report precision/recall/F1.
 ```
 

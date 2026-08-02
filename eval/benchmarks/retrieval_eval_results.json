@@ -1,0 +1,44 @@
+{
+  "manifest_path": "eval/benchmarks/poison_manifest.json",
+  "n_chunks": 280,
+  "n_asr_queries": 20,
+  "n_precision_queries": 106,
+  "n_overlap_excluded": 16,
+  "config": {
+    "retrieval_top_k": 5,
+    "retrieval_overfetch_factor": 3.0,
+    "retrieval_collection_name": "veritasrag_chunks",
+    "allow_quarantined_tier": false,
+    "poison_downweight_threshold_verified": 0.55,
+    "poison_hard_drop_threshold_verified": 0.85,
+    "poison_downweight_threshold_unverified": 0.35,
+    "poison_hard_drop_threshold_unverified": 0.65,
+    "downweight_floor_multiplier": 0.2,
+    "frequency_zscore_threshold": 3.0,
+    "frequency_min_samples": 20,
+    "frequency_hard_block": false,
+    "cluster_reference_sample_size": 128,
+    "exit_criteria_asr_reduction_pp_min": 30.0,
+    "exit_criteria_precision_loss_relative_pct_max": 15.0
+  },
+  "metrics": {
+    "defended": {
+      "asr": 0.0,
+      "precision_at_k": 0.34716981132075475
+    },
+    "undefended": {
+      "asr": 1.0,
+      "precision_at_k": 0.34528301886792456
+    },
+    "deltas": {
+      "asr_reduction_pp": 100.0,
+      "precision_loss_pp": -0.18867924528301883,
+      "precision_loss_relative_pct": -0.5464480874316938
+    }
+  },
+  "exit_criteria": {
+    "asr_reduction_pp_min": 30.0,
+    "precision_loss_relative_pct_max": 15.0,
+    "passed": true
+  }
+}

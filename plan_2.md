@@ -1,6 +1,6 @@
 # VeritasRAG — Implementation Handbook
 
-A phase-by-phase build guide for the VeritasRAG Trustworthy RAG Integrity Layer, written to be used directly with **Claude Code in VS Code**. Drop this file in your repo root as `PLAN.md`. Pair it with `CLAUDE.md` (provided separately) so Claude Code auto-loads your conventions every session.
+A phase-by-phase build guide for the VeritasRAG Trustworthy RAG Integrity Layer, written to be used directly with **Claude Code in VS Code**. Drop this file in your repo root as `plan_2.md`. Pair it with `CLAUDE.md` (provided separately) so Claude Code auto-loads your conventions every session.
 
 ---
 
@@ -9,13 +9,13 @@ A phase-by-phase build guide for the VeritasRAG Trustworthy RAG Integrity Layer,
 **One phase per working session.** Each phase below is scoped to roughly one sitting. Don't hand Claude Code the whole handbook and say "build it" — that produces a shallow pass over everything. Instead, each session:
 
 1. Open the project folder in VS Code, open the Claude Code panel (Spark icon in the editor toolbar, or `Cmd/Ctrl+Shift+P` → "Claude Code: Open in New Tab").
-2. Tell it explicitly which phase you're on: *"Read PLAN.md and CLAUDE.md. We're starting Phase 3. Only work within that phase's scope — don't jump ahead."*
+2. Tell it explicitly which phase you're on: *"Read plan_2.md and CLAUDE.md. We're starting Phase 3. Only work within that phase's scope — don't jump ahead."*
 3. For phases with real design decisions (3, 4, 6, 8 below), switch to **Plan Mode** first (mode indicator at the bottom of the prompt box) so Claude Code proposes an approach before touching files. Read the plan, correct anything off, then approve.
 4. Let it work, review the diffs it proposes (VS Code shows a side-by-side diff before every edit), and course-correct early rather than letting it run far off track.
 5. At the end of the session: *"Update PROGRESS.md — what's done, what's outstanding, today's eval numbers if any."* This is what keeps continuity across sessions once context gets compacted or you start a fresh session tomorrow.
 6. Commit. Ask Claude Code to write the commit message from the actual diff rather than writing one yourself.
 
-**Why phase-scoped sessions matter:** long single-session builds degrade — context fills up, earlier decisions get compacted away, and Claude Code starts re-deriving things it already decided. Fresh, well-scoped sessions with `PLAN.md` + `CLAUDE.md` + `PROGRESS.md` as anchors consistently produce better code than one marathon session.
+**Why phase-scoped sessions matter:** long single-session builds degrade — context fills up, earlier decisions get compacted away, and Claude Code starts re-deriving things it already decided. Fresh, well-scoped sessions with `plan_2.md` + `CLAUDE.md` + `PROGRESS.md` as anchors consistently produce better code than one marathon session.
 
 **Keep `eval/` deterministic.** Seed every random generator used in the synthetic poison corpus and the eval harness. This means every phase's numbers are reproducible and you can tell at a glance whether a Claude Code change helped or hurt.
 
@@ -128,9 +128,9 @@ Each phase lists what it builds, what it needs from earlier phases, a ready-to-p
 
 **Claude Code prompt**
 ```
-Set up the initial repository for VeritasRAG as described in PLAN.md Part 3.
+Set up the initial repository for VeritasRAG as described in plan_2.md Part 3.
 Create the folder layout, a pyproject.toml with the dependencies from the
-Tech Stack table in PLAN.md Part 1, a docker-compose.yml that runs Qdrant
+Tech Stack table in plan_2.md Part 1, a docker-compose.yml that runs Qdrant
 locally, and a .gitignore for a Python project. Scaffolding only — no
 business logic yet. After scaffolding, run docker compose up -d and verify
 Qdrant responds.
@@ -151,7 +151,7 @@ This is the single most important early deliverable — every later eval depends
 
 **Claude Code prompt**
 ```
-Implement Phase 1 from PLAN.md: src/ingestion/loaders.py for text/PDF/HTML
+Implement Phase 1 from plan_2.md: src/ingestion/loaders.py for text/PDF/HTML
 using LangChain document loaders, and eval/synthetic_poison_generator.py
 that pulls a subset of Natural Questions from Hugging Face datasets,
 generates PoisonedRAG-style adversarial passages (crafted text designed to
@@ -177,10 +177,10 @@ manifest labels match the injected chunks.
 
 **Claude Code prompt**
 ```
-Implement Phase 2 from PLAN.md: src/embeddings/embedder.py wrapping a
+Implement Phase 2 from plan_2.md: src/embeddings/embedder.py wrapping a
 sentence-transformers model, src/vectorstore/schema.py and
 qdrant_client.py defining and upserting the collection schema described in
-PLAN.md Phase 2, and src/ingestion/provenance.py that signs each chunk's
+plan_2.md Phase 2, and src/ingestion/provenance.py that signs each chunk's
 content hash with Ed25519 using the `cryptography` package (do not
 hand-roll any crypto). Batch-upsert the Phase 1 corpus. Write a script that
 samples a chunk from Qdrant and verifies its stored signature against its
@@ -203,7 +203,7 @@ content hash.
 
 **Claude Code prompt**
 ```
-Implement Phase 3 from PLAN.md. Build the poison detector combining
+Implement Phase 3 from plan_2.md. Build the poison detector combining
 perplexity scoring (src/detection/perplexity.py), embedding-space cluster
 anomaly detection (src/detection/cluster_anomaly.py), and an optional
 fine-tuned classifier (src/detection/classifier.py), fused into a single
@@ -229,7 +229,7 @@ This is the module the patent's first independent claim rests on — gate carefu
 
 **Claude Code prompt**
 ```
-Implement Phase 4 from PLAN.md: src/retrieval/policy_engine.py that takes
+Implement Phase 4 from plan_2.md: src/retrieval/policy_engine.py that takes
 retrieved candidates from Qdrant, applies trust-tier gating using the
 poison_score from Phase 3 and the trust_tier metadata from Phase 2, and
 flags chunks with anomalous retrieval frequency across unrelated queries.
@@ -253,7 +253,7 @@ cost-accuracy frontier.
 
 **Claude Code prompt**
 ```
-Implement Phase 5 from PLAN.md: src/generation/generate.py as a LangGraph
+Implement Phase 5 from plan_2.md: src/generation/generate.py as a LangGraph
 node that generates an answer from Claude using the gated retrieval
 context, src/generation/faithfulness.py that NLI-checks each generated
 claim against its cited chunk, eval/run_eval.py producing a full report
@@ -280,7 +280,7 @@ This opens the major project and is the strongest remaining patentable claim.
 
 **Claude Code prompt**
 ```
-Implement Phase 6 from PLAN.md: src/unlearning/delete.py for delete-by-ID
+Implement Phase 6 from plan_2.md: src/unlearning/delete.py for delete-by-ID
 against Qdrant with index compaction, src/unlearning/receipt.py that
 issues a signed JSON deletion receipt using the same Ed25519 setup as
 Phase 2's provenance signer, and src/unlearning/ghost_vector_defense.py
@@ -304,7 +304,7 @@ latency.
 
 **Claude Code prompt**
 ```
-Implement Phase 7 from PLAN.md: instrument the ingestion, retrieval, and
+Implement Phase 7 from plan_2.md: instrument the ingestion, retrieval, and
 generation modules with OpenTelemetry spans (src/observability/otel_setup.py),
 and build a Streamlit dashboard in dashboard/ that shows live query traces,
 poison-detection rate over time, trust-tier distribution across the
@@ -325,7 +325,7 @@ corpus, and the deletion audit log from Phase 6.
 
 **Claude Code prompt**
 ```
-Implement Phase 8 from PLAN.md: build a small multi-agent LangGraph
+Implement Phase 8 from plan_2.md: build a small multi-agent LangGraph
 (planner -> parallel retriever agents -> synthesizer), re-run the
 poisoning eval from Phase 4/5 against this agentic architecture and report
 whether ASR or detection F1 change, add tenant_id to the vector store
@@ -350,7 +350,7 @@ satisfies.
 
 **Claude Code prompt**
 ```
-Implement Phase 9 from PLAN.md: production Dockerfiles and a full-stack
+Implement Phase 9 from plan_2.md: production Dockerfiles and a full-stack
 docker-compose.yml, a GitHub Actions workflow that runs lint, pytest, and
 an eval smoke-test on every PR, and a script that runs the full pipeline
 with each defensive layer toggled on/off individually to produce a

@@ -169,6 +169,58 @@ def verify_sample(
     return results
 
 
+def search(
+    client: QdrantClient,
+    query_vector: list[float],
+    collection_name: str = COLLECTION_NAME,
+    top_k: int = 10,
+    trust_tiers: list[TrustTier] | None = None,
+) -> list[models.ScoredPoint]:
+    """Cosine-similarity search, optionally restricted to a set of trust tiers.
+
+    `trust_tiers=None` searches every tier; passing a list applies a
+    server-side `trust_tier` filter so excluded tiers never leave Qdrant.
+    """
+    query_filter = None
+    if trust_tiers is not None:
+        query_filter = models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="trust_tier",
+                    match=models.MatchAny(any=[tier.value for tier in trust_tiers]),
+                )
+            ]
+        )
+    response = client.query_points(
+        collection_name=collection_name,
+        query=query_vector,
+        query_filter=query_filter,
+        limit=top_k,
+        with_payload=True,
+    )
+    return response.points
+
+
+def sample_random(
+    client: QdrantClient,
+    collection_name: str = COLLECTION_NAME,
+    sample_size: int = 128,
+) -> list[models.ScoredPoint]:
+    """Random sample of points (with payload), for use as a stable reference set.
+
+    Used by the Phase 4 policy engine to stabilize the cluster-anomaly
+    detector's k-NN sub-signal when scoring small per-query candidate batches
+    (see `src/retrieval/policy_engine.py`'s module docstring).
+    """
+    response = client.query_points(
+        collection_name=collection_name,
+        query=models.SampleQuery(sample=models.Sample.RANDOM),
+        limit=sample_size,
+        with_payload=True,
+    )
+    return response.points
+
+
 def _cmd_upsert(args: argparse.Namespace) -> None:
     manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
     client = get_client(args.qdrant_url)
