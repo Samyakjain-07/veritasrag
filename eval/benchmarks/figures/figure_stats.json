@@ -1,0 +1,13 @@
+{
+  "perplexity": {
+    "clean_mean": 54.23936897191135,
+    "clean_median": 44.86906051635742,
+    "poison_mean": 101.74962272644044,
+    "poison_median": 95.67084503173828,
+    "roc_auc": 0.8442424242424242
+  },
+  "detector_roc": {
+    "roc_auc": 0.9916666666666667,
+    "n_thresholds_roc": 18
+  }
+}
