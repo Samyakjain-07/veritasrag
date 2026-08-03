@@ -29,10 +29,12 @@ from math import ceil
 from statistics import fmean, pstdev
 from typing import TypedDict
 
+from opentelemetry import trace
 from qdrant_client import QdrantClient
 
 from src.detection.pipeline import ChunkScore, DetectionPipeline
 from src.embeddings.embedder import Embedder
+from src.observability.otel_setup import get_tracer
 from src.retrieval.config import DEFAULT_CONFIG, PolicyConfig
 from src.vectorstore.qdrant_client import get_client, sample_random, search
 from src.vectorstore.schema import TrustTier
@@ -223,6 +225,58 @@ def _get_reference_sample(client: QdrantClient, config: PolicyConfig) -> list[st
     return _reference_sample
 
 
+_DROP_REASONS = ("quarantined_tier", "poison_score_hard_drop", "frequency_anomaly_hard_block")
+
+
+def _set_empty_retrieve_attributes(span: trace.Span) -> None:
+    """Zero-fill span attributes for the no-candidates-fetched early return,
+    keeping the attribute schema stable across both `retrieve()` return paths.
+    """
+    span.set_attribute("veritasrag.retrieval.fetched_count", 0)
+    span.set_attribute("veritasrag.retrieval.allow_count", 0)
+    span.set_attribute("veritasrag.retrieval.downweight_count", 0)
+    span.set_attribute("veritasrag.retrieval.drop_count", 0)
+    for reason in _DROP_REASONS:
+        span.set_attribute(f"veritasrag.retrieval.drop_reason.{reason}_count", 0)
+    span.set_attribute("veritasrag.retrieval.frequency_flagged_count", 0)
+    span.set_attribute("veritasrag.retrieval.returned_count", 0)
+
+
+def _set_retrieve_attributes(
+    span: trace.Span,
+    raw_candidates: list[RawCandidate],
+    gated: list[GatedCandidate],
+    final_candidates: list[GatedCandidate],
+) -> None:
+    """Span attributes needed by the dashboard's detection-rate-over-time
+    panel: fetched/allow/downweight/drop counts plus a per-drop-reason
+    breakdown, computed from the already-built `gated` list.
+    """
+    span.set_attribute("veritasrag.retrieval.fetched_count", len(raw_candidates))
+    span.set_attribute(
+        "veritasrag.retrieval.allow_count",
+        sum(1 for gc in gated if gc.decision == GateDecision.ALLOW),
+    )
+    span.set_attribute(
+        "veritasrag.retrieval.downweight_count",
+        sum(1 for gc in gated if gc.decision == GateDecision.DOWNWEIGHT),
+    )
+    span.set_attribute(
+        "veritasrag.retrieval.drop_count",
+        sum(1 for gc in gated if gc.decision == GateDecision.DROP),
+    )
+    for reason in _DROP_REASONS:
+        span.set_attribute(
+            f"veritasrag.retrieval.drop_reason.{reason}_count",
+            sum(1 for gc in gated if gc.drop_reason == reason),
+        )
+    span.set_attribute(
+        "veritasrag.retrieval.frequency_flagged_count",
+        sum(1 for gc in final_candidates if gc.frequency_flagged),
+    )
+    span.set_attribute("veritasrag.retrieval.returned_count", len(final_candidates))
+
+
 def retrieve(
     query: str,
     *,
@@ -239,87 +293,94 @@ def retrieve(
     No LangGraph dependency -- directly callable and testable on its own.
     `retrieve_node` below is the thin LangGraph adapter.
     """
-    embedder = embedder or _default_embedder()
-    client = qdrant_client_instance or _default_qdrant_client()
-    pipeline = detection_pipeline or _default_detection_pipeline(embedder)
-    tracker = tracker or _frequency_tracker
+    with get_tracer(__name__).start_as_current_span("veritasrag.retrieval.retrieve") as span:
+        embedder = embedder or _default_embedder()
+        client = qdrant_client_instance or _default_qdrant_client()
+        pipeline = detection_pipeline or _default_detection_pipeline(embedder)
+        tracker = tracker or _frequency_tracker
 
-    fetch_k = max(
-        config.retrieval_top_k, ceil(config.retrieval_top_k * config.retrieval_overfetch_factor)
-    )
-    allowed_tiers = (
-        None if config.allow_quarantined_tier else [TrustTier.VERIFIED, TrustTier.UNVERIFIED]
-    )
-
-    query_vector = embedder.embed_one(query).tolist()
-    points = search(client, query_vector, config.retrieval_collection_name, fetch_k, allowed_tiers)
-
-    raw_candidates = [
-        RawCandidate(
-            point_id=str(point.id),
-            chunk_id=point.payload["chunk_id"],
-            doc_id=point.payload["doc_id"],
-            source_uri=point.payload["source_uri"],
-            trust_tier=TrustTier(point.payload["trust_tier"]),
-            text=point.payload["text"],
-            similarity_score=point.score,
+        fetch_k = max(
+            config.retrieval_top_k,
+            ceil(config.retrieval_top_k * config.retrieval_overfetch_factor),
         )
-        for point in points
-    ]
-    if not raw_candidates:
-        return RetrievalResult(
-            query=query, candidates=[], fetched_count=0, dropped_count=0, frequency_flags=[]
+        allowed_tiers = (
+            None if config.allow_quarantined_tier else [TrustTier.VERIFIED, TrustTier.UNVERIFIED]
         )
 
-    reference_texts = _get_reference_sample(client, config)
-    chunk_scores = pipeline.score_chunks(
-        [candidate.text for candidate in raw_candidates],
-        [candidate.chunk_id for candidate in raw_candidates],
-        reference_texts,
-    )
-
-    gated: list[GatedCandidate] = []
-    for candidate, chunk_score in zip(raw_candidates, chunk_scores, strict=True):
-        decision, weight, drop_reason = _gate(
-            candidate.trust_tier, chunk_score.poison_score, config
+        query_vector = embedder.embed_one(query).tolist()
+        points = search(
+            client, query_vector, config.retrieval_collection_name, fetch_k, allowed_tiers
         )
 
-        frequency_flagged = False
-        if decision != GateDecision.DROP:
-            tracker.record(candidate.chunk_id)
-            frequency_flagged = tracker.is_anomalous(candidate.chunk_id, config)
-            if frequency_flagged and config.frequency_hard_block:
-                decision = GateDecision.DROP
-                weight = 0.0
-                drop_reason = "frequency_anomaly_hard_block"
-
-        gated.append(
-            GatedCandidate(
-                candidate=candidate,
-                chunk_score=chunk_score,
-                decision=decision,
-                drop_reason=drop_reason,
-                policy_weight=weight,
-                adjusted_score=candidate.similarity_score * weight,
-                frequency_flagged=frequency_flagged,
+        raw_candidates = [
+            RawCandidate(
+                point_id=str(point.id),
+                chunk_id=point.payload["chunk_id"],
+                doc_id=point.payload["doc_id"],
+                source_uri=point.payload["source_uri"],
+                trust_tier=TrustTier(point.payload["trust_tier"]),
+                text=point.payload["text"],
+                similarity_score=point.score,
             )
+            for point in points
+        ]
+        if not raw_candidates:
+            _set_empty_retrieve_attributes(span)
+            return RetrievalResult(
+                query=query, candidates=[], fetched_count=0, dropped_count=0, frequency_flags=[]
+            )
+
+        reference_texts = _get_reference_sample(client, config)
+        chunk_scores = pipeline.score_chunks(
+            [candidate.text for candidate in raw_candidates],
+            [candidate.chunk_id for candidate in raw_candidates],
+            reference_texts,
         )
 
-    not_dropped = [gc for gc in gated if gc.decision != GateDecision.DROP]
-    survivors = sorted(not_dropped, key=lambda gc: gc.adjusted_score, reverse=True)
-    final_candidates = survivors[: config.retrieval_top_k]
+        gated: list[GatedCandidate] = []
+        for candidate, chunk_score in zip(raw_candidates, chunk_scores, strict=True):
+            decision, weight, drop_reason = _gate(
+                candidate.trust_tier, chunk_score.poison_score, config
+            )
 
-    return RetrievalResult(
-        query=query,
-        candidates=final_candidates,
-        fetched_count=len(raw_candidates),
-        dropped_count=len(gated) - len(survivors),
-        frequency_flags=[
-            gated_candidate.candidate.chunk_id
-            for gated_candidate in final_candidates
-            if gated_candidate.frequency_flagged
-        ],
-    )
+            frequency_flagged = False
+            if decision != GateDecision.DROP:
+                tracker.record(candidate.chunk_id)
+                frequency_flagged = tracker.is_anomalous(candidate.chunk_id, config)
+                if frequency_flagged and config.frequency_hard_block:
+                    decision = GateDecision.DROP
+                    weight = 0.0
+                    drop_reason = "frequency_anomaly_hard_block"
+
+            gated.append(
+                GatedCandidate(
+                    candidate=candidate,
+                    chunk_score=chunk_score,
+                    decision=decision,
+                    drop_reason=drop_reason,
+                    policy_weight=weight,
+                    adjusted_score=candidate.similarity_score * weight,
+                    frequency_flagged=frequency_flagged,
+                )
+            )
+
+        not_dropped = [gc for gc in gated if gc.decision != GateDecision.DROP]
+        survivors = sorted(not_dropped, key=lambda gc: gc.adjusted_score, reverse=True)
+        final_candidates = survivors[: config.retrieval_top_k]
+
+        _set_retrieve_attributes(span, raw_candidates, gated, final_candidates)
+
+        return RetrievalResult(
+            query=query,
+            candidates=final_candidates,
+            fetched_count=len(raw_candidates),
+            dropped_count=len(gated) - len(survivors),
+            frequency_flags=[
+                gated_candidate.candidate.chunk_id
+                for gated_candidate in final_candidates
+                if gated_candidate.frequency_flagged
+            ],
+        )
 
 
 def retrieve_node(state: RetrievalState) -> dict:

@@ -23,6 +23,15 @@ keys/
 # Trained model artifacts
 models/
 
+# Signed deletion receipts (Phase 6 unlearning audit trail)
+receipts/
+
+# OTel JSONL trace file (Phase 7 observability). Leading slash matters here,
+# unlike the generated dirs above: a bare "observability/" is unanchored (git
+# matches it at any depth) and would also match the tracked src/observability/
+# package, silently ignoring any new file that ever lands there.
+/observability/
+
 # LLM-judge dev cache
 eval/benchmarks/.judge_cache.json
 

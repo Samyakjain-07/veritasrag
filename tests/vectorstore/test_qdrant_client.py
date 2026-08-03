@@ -5,6 +5,7 @@ from src.vectorstore.qdrant_client import (
     get_client,
     point_id_for_chunk,
     source_uri_for,
+    trust_tier_counts,
     upsert_manifest,
     verify_sample,
 )
@@ -103,3 +104,13 @@ def test_verify_sample_detects_tampered_hash(client, embedder, signer):
     tampered_result = next(r for r in results if r["chunk_id"] == point.payload["chunk_id"])
 
     assert tampered_result["signature_valid"] is False
+
+
+def test_trust_tier_counts(client, embedder, signer):
+    if client.collection_exists(TEST_COLLECTION):
+        client.delete_collection(TEST_COLLECTION)
+    upsert_manifest(client, SAMPLE_MANIFEST, embedder, signer, collection_name=TEST_COLLECTION)
+
+    counts = trust_tier_counts(client, TEST_COLLECTION)
+
+    assert counts == {TrustTier.UNVERIFIED.value: len(SAMPLE_MANIFEST)}

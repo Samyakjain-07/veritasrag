@@ -13,6 +13,8 @@ from langchain_community.document_loaders import BSHTMLLoader, PyPDFLoader, Text
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+from src.observability.otel_setup import get_tracer
+
 DEFAULT_CHUNK_SIZE = 500
 DEFAULT_CHUNK_OVERLAP = 50
 
@@ -49,14 +51,18 @@ def load_document(path: str | Path) -> list[Document]:
     Supports `.txt`/`.md` (text), `.pdf` (PDF), and `.html`/`.htm` (HTML).
     Raises `ValueError` for any other extension.
     """
-    path = Path(path)
-    loader = _LOADERS_BY_SUFFIX.get(path.suffix.lower())
-    if loader is None:
-        supported = ", ".join(sorted(_LOADERS_BY_SUFFIX))
-        raise ValueError(
-            f"Unsupported file extension '{path.suffix}' for {path}. Supported: {supported}"
-        )
-    return loader(path)
+    with get_tracer(__name__).start_as_current_span("veritasrag.ingestion.load_document") as span:
+        path = Path(path)
+        span.set_attribute("veritasrag.ingestion.source_path", str(path))
+        loader = _LOADERS_BY_SUFFIX.get(path.suffix.lower())
+        if loader is None:
+            supported = ", ".join(sorted(_LOADERS_BY_SUFFIX))
+            raise ValueError(
+                f"Unsupported file extension '{path.suffix}' for {path}. Supported: {supported}"
+            )
+        documents = loader(path)
+        span.set_attribute("veritasrag.ingestion.document_count", len(documents))
+        return documents
 
 
 def chunk_documents(
@@ -65,8 +71,16 @@ def chunk_documents(
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
 ) -> list[Document]:
     """Split documents into overlapping chunks using a recursive character splitter."""
-    splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-    return splitter.split_documents(documents)
+    with get_tracer(__name__).start_as_current_span("veritasrag.ingestion.chunk_documents") as span:
+        span.set_attribute("veritasrag.ingestion.input_document_count", len(documents))
+        span.set_attribute("veritasrag.ingestion.chunk_size", chunk_size)
+        span.set_attribute("veritasrag.ingestion.chunk_overlap", chunk_overlap)
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size, chunk_overlap=chunk_overlap
+        )
+        chunks = splitter.split_documents(documents)
+        span.set_attribute("veritasrag.ingestion.chunk_count", len(chunks))
+        return chunks
 
 
 def load_and_chunk(

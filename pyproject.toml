@@ -39,6 +39,7 @@ dependencies = [
     "opentelemetry-sdk",
     # Dashboard
     "streamlit",
+    "pandas",
     # Config
     "python-dotenv",
 ]

@@ -27,6 +27,7 @@ from src.generation.config import (
 )
 from src.generation.faithfulness import ContextChunk, FaithfulnessChecker, FaithfulnessReport
 from src.generation.llm_client import get_llm
+from src.observability.otel_setup import get_tracer
 from src.retrieval.policy_engine import RetrievalResult
 
 
@@ -103,25 +104,50 @@ def generate(
     a context-free call would only invite the model to answer from its own
     unverified knowledge.
     """
-    context = _build_context(result, config)
-    if not context:
+    with get_tracer(__name__).start_as_current_span("veritasrag.generation.generate") as span:
+        context = _build_context(result, config)
+        span.set_attribute("veritasrag.generation.context_chunk_count", len(context))
+        if not context:
+            span.set_attribute("veritasrag.generation.short_circuited", True)
+            span.set_attribute(
+                "veritasrag.generation.answer_length",
+                len(config.generation_no_context_answer),
+            )
+            span.set_attribute("veritasrag.generation.ungrounded_claims_count", 0)
+            return GenerationResult(
+                query=query,
+                answer=config.generation_no_context_answer,
+                context=[],
+                faithfulness=None,
+            )
+        span.set_attribute("veritasrag.generation.short_circuited", False)
+
+        llm = llm or get_llm(temperature=config.generation_temperature)
+        messages = _build_messages(query, context, config)
+        with get_tracer(__name__).start_as_current_span("veritasrag.generation.llm_invoke"):
+            response = llm.invoke(messages)
+        answer = response.content if isinstance(response.content, str) else str(response.content)
+        span.set_attribute("veritasrag.generation.answer_length", len(answer))
+
+        faithfulness_report = None
+        if run_faithfulness_check:
+            checker = faithfulness_checker or _default_faithfulness_checker(faithfulness_config)
+            faithfulness_report = checker.check(answer, context)
+
+        if faithfulness_report is not None:
+            span.set_attribute(
+                "veritasrag.generation.faithfulness_score", faithfulness_report.faithfulness_score
+            )
+            span.set_attribute(
+                "veritasrag.generation.ungrounded_claims_count",
+                len(faithfulness_report.ungrounded_claims),
+            )
+        else:
+            span.set_attribute("veritasrag.generation.ungrounded_claims_count", 0)
+
         return GenerationResult(
-            query=query, answer=config.generation_no_context_answer, context=[], faithfulness=None
+            query=query, answer=answer, context=context, faithfulness=faithfulness_report
         )
-
-    llm = llm or get_llm(temperature=config.generation_temperature)
-    messages = _build_messages(query, context, config)
-    response = llm.invoke(messages)
-    answer = response.content if isinstance(response.content, str) else str(response.content)
-
-    faithfulness_report = None
-    if run_faithfulness_check:
-        checker = faithfulness_checker or _default_faithfulness_checker(faithfulness_config)
-        faithfulness_report = checker.check(answer, context)
-
-    return GenerationResult(
-        query=query, answer=answer, context=context, faithfulness=faithfulness_report
-    )
 
 
 class GenerationState(TypedDict):

@@ -24,6 +24,7 @@ from qdrant_client import QdrantClient, models
 
 from src.embeddings.embedder import Embedder
 from src.ingestion.provenance import ProvenanceSigner
+from src.observability.otel_setup import get_tracer
 from src.vectorstore.schema import COLLECTION_NAME, TrustTier, build_payload
 
 load_dotenv()
@@ -77,39 +78,46 @@ def upsert_manifest(
 
     Returns the number of points upserted.
     """
-    ensure_collection(client, collection_name, embedder.dimension)
+    with get_tracer(__name__).start_as_current_span("veritasrag.ingestion.upsert_manifest") as span:
+        span.set_attribute("veritasrag.ingestion.manifest_size", len(manifest))
+        span.set_attribute("veritasrag.ingestion.batch_size", batch_size)
+        span.set_attribute("veritasrag.ingestion.trust_tier", trust_tier.value)
+        span.set_attribute("veritasrag.ingestion.collection_name", collection_name)
 
-    total = 0
-    for start in range(0, len(manifest), batch_size):
-        batch = manifest[start : start + batch_size]
-        vectors = embedder.embed([entry["text"] for entry in batch])
+        ensure_collection(client, collection_name, embedder.dimension)
 
-        points = []
-        for entry, vector in zip(batch, vectors, strict=True):
-            content_hash = signer.hash_content(entry["text"])
-            signature = signer.sign(content_hash)
-            payload = build_payload(
-                doc_id=entry["source_doc"],
-                chunk_id=entry["chunk_id"],
-                source_uri=source_uri_for(entry["source_doc"]),
-                trust_tier=trust_tier,
-                provenance_signature=signature,
-                ingested_at=datetime.now(UTC).isoformat(),
-                content_hash=content_hash,
-                text=entry["text"],
-            )
-            points.append(
-                models.PointStruct(
-                    id=point_id_for_chunk(entry["chunk_id"]),
-                    vector=vector.tolist(),
-                    payload=payload,
+        total = 0
+        for start in range(0, len(manifest), batch_size):
+            batch = manifest[start : start + batch_size]
+            vectors = embedder.embed([entry["text"] for entry in batch])
+
+            points = []
+            for entry, vector in zip(batch, vectors, strict=True):
+                content_hash = signer.hash_content(entry["text"])
+                signature = signer.sign(content_hash)
+                payload = build_payload(
+                    doc_id=entry["source_doc"],
+                    chunk_id=entry["chunk_id"],
+                    source_uri=source_uri_for(entry["source_doc"]),
+                    trust_tier=trust_tier,
+                    provenance_signature=signature,
+                    ingested_at=datetime.now(UTC).isoformat(),
+                    content_hash=content_hash,
+                    text=entry["text"],
                 )
-            )
+                points.append(
+                    models.PointStruct(
+                        id=point_id_for_chunk(entry["chunk_id"]),
+                        vector=vector.tolist(),
+                        payload=payload,
+                    )
+                )
 
-        client.upsert(collection_name=collection_name, points=points)
-        total += len(points)
+            client.upsert(collection_name=collection_name, points=points)
+            total += len(points)
 
-    return total
+        span.set_attribute("veritasrag.ingestion.chunks_upserted_count", total)
+        return total
 
 
 def _all_point_ids(client: QdrantClient, collection_name: str) -> list[str | int]:
@@ -219,6 +227,35 @@ def sample_random(
         with_payload=True,
     )
     return response.points
+
+
+def trust_tier_counts(
+    client: QdrantClient,
+    collection_name: str = COLLECTION_NAME,
+) -> dict[str, int]:
+    """Tally every point's `trust_tier` payload field via a full collection scroll.
+
+    Brute-force at this scale (~280 chunks) -- same assumption made elsewhere
+    in the repo (e.g. Phase 6's `fetch_all_vectors`). Tiers with zero points
+    are omitted, not zero-filled -- callers zero-fill against `TrustTier`'s
+    full member list themselves if every category needs to be shown.
+    """
+    counts: dict[str, int] = {}
+    next_offset = None
+    while True:
+        points, next_offset = client.scroll(
+            collection_name=collection_name,
+            limit=256,
+            offset=next_offset,
+            with_payload=["trust_tier"],
+            with_vectors=False,
+        )
+        for point in points:
+            tier = (point.payload or {}).get("trust_tier", "unknown")
+            counts[tier] = counts.get(tier, 0) + 1
+        if next_offset is None:
+            break
+    return counts
 
 
 def _cmd_upsert(args: argparse.Namespace) -> None:

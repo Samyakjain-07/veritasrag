@@ -17,6 +17,7 @@ from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel
 
 from src.generation.generate import GenerationResult, GenerationState, generate_node
+from src.observability.otel_setup import get_tracer
 from src.retrieval.policy_engine import GatedCandidate, RetrievalResult, retrieve_node
 
 
@@ -110,8 +111,10 @@ def health() -> dict[str, str]:
 @app.post("/query", response_model=QueryResponse)
 def query(request: QueryRequest) -> QueryResponse:
     """Run the full retrieve -> generate -> faithfulness-check loop for one question."""
-    initial_state = {"query": request.question, "result": None, "generation": None}
-    final_state = _get_graph().invoke(initial_state)
-    result: RetrievalResult = final_state["result"]
-    generation: GenerationResult = final_state["generation"]
-    return _response_from_state(request.question, result, generation)
+    with get_tracer(__name__).start_as_current_span("veritasrag.query") as span:
+        span.set_attribute("veritasrag.query.question", request.question[:200])
+        initial_state = {"query": request.question, "result": None, "generation": None}
+        final_state = _get_graph().invoke(initial_state)
+        result: RetrievalResult = final_state["result"]
+        generation: GenerationResult = final_state["generation"]
+        return _response_from_state(request.question, result, generation)
