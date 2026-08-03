@@ -5,6 +5,7 @@ import pytest
 from eval.run_eval import (
     DEFAULT_MANIFEST_PATH,
     _attack_succeeded,
+    _chunk_to_question_map,
     _percentile,
     _precision_at_k,
     build_query_sets,
@@ -57,6 +58,30 @@ def test_build_query_sets_overlap_excluded_from_precision_only():
 
     assert asr_rows.isdisjoint(precision_rows)
     assert n_overlap_excluded == 16
+
+
+def test_chunk_to_question_map_covers_every_chunk_in_both_query_sets():
+    manifest = _load_real_manifest()
+    asr_queries, precision_queries, _ = build_query_sets(manifest)
+
+    mapping = _chunk_to_question_map(asr_queries, precision_queries)
+
+    expected_chunk_ids = set().union(
+        *(q.poison_chunk_ids for q in asr_queries),
+        *(q.relevant_chunk_ids for q in precision_queries),
+    )
+    assert set(mapping) == expected_chunk_ids
+
+
+def test_chunk_to_question_map_poison_chunk_maps_to_target_question():
+    manifest = _load_real_manifest()
+    asr_queries, precision_queries, _ = build_query_sets(manifest)
+    mapping = _chunk_to_question_map(asr_queries, precision_queries)
+
+    query = asr_queries[0]
+    chunk_id = next(iter(query.poison_chunk_ids))
+
+    assert mapping[chunk_id] == query.question
 
 
 def test_attack_succeeded_true_when_poison_chunk_present():

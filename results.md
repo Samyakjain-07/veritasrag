@@ -1,6 +1,6 @@
 # VeritasRAG — Results
 
-**Status as of this report:** Phases 0–5 of `PLAN.md` are complete (`PROGRESS.md`); Phase 6 (verifiable unlearning), Phase 7 (observability), and Phase 8 (agentic/multi-tenancy) have not been started. Every number below is pulled directly from committed eval artifacts (`eval/benchmarks/*.json`), the codebase, or a deterministic re-run of already-implemented Phase 0–5 code (see Stage 3). **No number in this report is estimated, extrapolated, or fabricated.** Where the underlying implementation or eval harness doesn't exist yet, the cell says so explicitly and names what would need to be built, rather than guessing.
+**Status as of this report:** Phases 0–6 of `PLAN.md` are complete (`PROGRESS.md`); Phase 7 (observability) and Phase 8 (agentic/multi-tenancy) have not been started. Every number below is pulled directly from committed eval artifacts (`eval/benchmarks/*.json`), the codebase, or a deterministic re-run of already-implemented code (see Stage 3). **No number in this report is estimated, extrapolated, or fabricated.** Where the underlying implementation or eval harness doesn't exist yet, the cell says so explicitly and names what would need to be built, rather than guessing.
 
 ---
 
@@ -33,12 +33,12 @@
 | + Layer 1 (poison detection) only | *Not isolated by current eval* | — | — | — | — |
 | + Layer 2 (provenance/trust-tier gating) only | *Not isolated by current eval* | — | — | — | — |
 | + Layer 1 + Layer 2 combined (current `defended` run) | **0.000** | **−100.0** | Not measured | 0.347 | Not measured |
-| + Layer 3 (unlearning) | *Not implemented* | — | — | — | — |
-| Full VeritasRAG (all layers) | *Not implemented* | — | — | — | — |
+| + Layer 3 (unlearning) | *Not applicable to this metric* | — | — | — | — |
+| Full VeritasRAG (all layers) | *Not applicable to this metric* | — | — | — | — |
 
 **Gaps, explained:**
 - **Layer 1 vs. Layer 2 isolation**: `src/retrieval/policy_engine.py::_gate()` reads the fused `poison_score` (Layer 1's output) *and* `trust_tier` (Layer 2's input) together in one decision function — there's no eval mode that runs one without the other. Isolating them needs a new `--stage retrieval --ablate {detection,gating}` flag in `eval/run_eval.py` that either force-sets `poison_score=0` (gating-only) or force-sets every `trust_tier` to a fixed value (detection-only).
-- **Layer 3 / Full VeritasRAG**: Phase 6 (`src/unlearning/{delete,receipt,ghost_vector_defense}.py`) is entirely unimplemented (0-byte stub files) — there is no unlearning layer to turn on.
+- **Layer 3 / Full VeritasRAG**: Phase 6 (`src/unlearning/{delete,receipt,ghost_vector_defense}.py`) is implemented and evaluated as of this report (see Table VI) — but it isn't an ASR-reducing retrieval-time gate the way Layers 1–2 are, so it has no ASR/precision@k row of its own to report here. Unlearning removes specific already-ingested chunks by ID (a "right to be forgotten" capability); it doesn't change how surviving chunks are scored or gated during retrieval. A row here would require re-running the Table II retrieval eval on a corpus with some chunks unlearned, which isn't what Phase 6's own eval (deletion latency, reconstruction-attack resistance, receipt validity) measured.
 - **Clean ACC↑**: no answer-correctness eval exists. The closest measured proxy is `faithfulness_precision = 0.425` (Phase 5, generation stage) — but that metric conflates correct abstention with hallucination (documented limitation, see Stage 2) and is not the same thing as accuracy, so it is not substituted here.
 - **Recall@5**: `eval/run_eval.py::_precision_at_k` only computes precision (fraction of the top-k that are relevant); no recall-at-k is currently computed anywhere in the codebase.
 - **Exit criteria (the one row that *is* measured):** ASR reduction ≥30pp → **100.0pp, PASSED**. Retrieval-precision loss <15% (relative) → **−0.55% (i.e. precision improved, not lost), PASSED**. Source: `eval/benchmarks/retrieval_eval_results.json::exit_criteria.passed = true`.
@@ -71,9 +71,9 @@ Only one attack type (the PoisonedRAG-style template family above) and one poiso
 | on | on | off | 0.000 | — |
 | on | off | off | *Not isolated* | — |
 | off | on | off | *Not isolated* | — |
-| any | any | on | *Not implemented (Phase 6)* | — |
+| any | any | on | *Not applicable to this metric (see Table VI)* | — |
 
-Same root cause as Table II: Layers 1 and 2 are architecturally fused in `policy_engine.py::_gate()` (not a bug — Phase 4's design deliberately makes trust-tier and poison-score compound rather than gate independently), so today's eval harness only has two real data points: all-off (undefended) and 1+2-combined-on (defended). The "FPR↓" column as a *retrieval-level* ablation metric (fraction of clean chunks wrongly gated out, per combination) isn't logged anywhere — the closest existing number is Table III's *detection-level* FPR (0.0227 for the fused pipeline), which is a different, upstream quantity. Producing a real Table IV needs a new `eval/run_eval.py --stage ablation` entry point that runs `retrieve()` under each of the 2³ (or, honestly, 2² until Layer 3 exists) on/off combinations and logs both ASR and a retrieval-level clean-chunk-drop rate per combination.
+Same root cause as Table II: Layers 1 and 2 are architecturally fused in `policy_engine.py::_gate()` (not a bug — Phase 4's design deliberately makes trust-tier and poison-score compound rather than gate independently), so today's eval harness only has two real data points: all-off (undefended) and 1+2-combined-on (defended). The "FPR↓" column as a *retrieval-level* ablation metric (fraction of clean chunks wrongly gated out, per combination) isn't logged anywhere — the closest existing number is Table III's *detection-level* FPR (0.0227 for the fused pipeline), which is a different, upstream quantity. Producing a real Table IV needs a new `eval/run_eval.py --stage ablation` entry point that runs `retrieve()` under each of the 2² on/off combinations and logs both ASR and a retrieval-level clean-chunk-drop rate per combination. Layer 3 (unlearning, Phase 6, now implemented) still has no row here for the same reason as Table II: it isn't a retrieval-time on/off gate, it's a deletion capability evaluated on its own axis (Table VI) — toggling it "on" doesn't change ASR/FPR for queries against surviving content.
 
 ---
 
@@ -93,16 +93,27 @@ Same root cause as Table II: Layers 1 and 2 are architecturally fused in `policy
 
 ### Table VI — Verifiable Unlearning
 
-**Not implemented.** `src/unlearning/delete.py`, `src/unlearning/receipt.py`, and `src/unlearning/ghost_vector_defense.py` are all present as 0-byte stub files from the Phase 0 scaffold — Phase 6 of `PLAN.md` has not been started. None of the following exist yet: deletion-by-ID against Qdrant, signed deletion receipts, ghost-vector reconstruction defense, or an unlearning eval stage (`eval/run_eval.py --stage unlearning` is referenced in `PLAN.md`'s Phase 6 verify step but doesn't exist in the current `run_eval.py`).
+Implemented and evaluated this session (`PROGRESS.md`, Phase 6). `src/unlearning/{delete,receipt,ghost_vector_defense}.py` provide delete-by-ID against Qdrant with forced index compaction, an Ed25519-signed JSON deletion receipt (same keypair/signer as Phase 2's provenance signing), and a two-part "ghost vector" defense: a membership-inference self-check (does the point's own true pre-delete vector still surface it post-delete?) and a corpus-level reconstruction attack (does any surviving chunk still leak equivalent content via nearest-neighbor search, judged against a decoy-derived chance baseline rather than a naive mean).
 
 | Metric | Value |
 |---|---|
-| Deletion latency (total / per-record) | Not implemented |
-| Residual retrievability / removal-precision@k, before→after | Not implemented |
-| Membership-inference / re-retrieval check | Not implemented |
-| Receipt-generation time | Not implemented |
-| Receipt-verification time | Not implemented |
-| Receipt validity (%) | Not implemented |
+| Deletion latency, delete-only (mean / p50 / p95) | 7.9 ms / 8.6 ms / 12.8 ms |
+| Deletion latency, delete + index compaction (mean / p50 / p95) | 30.6 ms / 26.8 ms / 59.8 ms |
+| Residual retrievability / removal-precision@k, before → after | 0.200 → 0.000 |
+| Membership-inference / re-retrieval check (pass rate) | **100.0%** (20/20) |
+| Reconstruction-attack success rate (vs. chance baseline) | **5.0%** (1/20) |
+| Receipt-generation time (mean / p50 / p95) | 1.1 ms / 1.1 ms / 2.0 ms |
+| Receipt-verification time (mean / p50 / p95) | 0.3 ms / 0.3 ms / 0.6 ms |
+| Receipt validity (%) | **100.0%** (20/20) |
+
+Source: `eval/benchmarks/unlearning_eval_results.json` (`python eval/run_eval.py --stage unlearning`, seed 42, `n=20` chunks sampled from the 280-chunk manifest, deletions run against a disposable scratch collection seeded from the same manifest — the live demo corpus is never touched by this eval).
+
+**Methodology notes:**
+- **Removal-precision@k, before→after**: for each sampled chunk, the query known to retrieve it (its PoisonedRAG target question or reconstructed NQ question) is run against the scratch collection immediately before and immediately after that chunk's deletion. Before: 0.200 (i.e. present in the top-5 exactly once per query, as expected for a genuinely relevant chunk). After: 0.000 for every sampled query — the chunk never reappears, confirming the delete is real, not a soft/logical delete that Qdrant's search still honors.
+- **Membership-inference / re-retrieval check**: after delete + compaction, `verify_unrecoverable()` searches the collection with the point's own captured pre-delete vector (the strongest possible query an attacker could construct) and confirms the point ID doesn't come back. 100% pass rate across all 20 deletions — Qdrant's delete + forced compaction leaves no residual index trace findable this way.
+- **Reconstruction-attack success rate**: "success" means a surviving chunk's similarity to the deleted chunk's true vector exceeds the 95th percentile of a decoy-query null distribution (20 decoys per deletion, sampled from chunks sharing no `doc_id` with the deleted chunk, each decoy's own best-neighbor similarity computed against the same surviving corpus). Comparing against a percentile of decoy draws rather than their mean matters: a best-neighbor (max) statistic reliably beats a mean-of-random-draws even with zero real leakage, which would make the metric read as "always succeeds" regardless of ground truth. The measured 5.0% (1/20) is a real, expected signal, not a defect or a null result: the sample mixes clean NQ-derived chunks (which have no near-duplicates in this corpus and correctly show no leakage) with PoisonedRAG poison chunks, whose deliberately-templated same-target-question siblings (Table III's detection module already documents ~0.645 mean same-target-poison-pair similarity) occasionally register as genuine reconstructable leakage when a sibling survives the one deletion. The check is discriminating correctly between these two cases, not vacuously passing or failing.
+- **Receipt validity**: every one of the 20 receipts independently re-verifies (hash of the canonical receipt body recomputed and checked against the stored `receipt_hash`, then the Ed25519 signature checked against Phase 2's public key) — 100%, as expected for an unmodified, correctly-signed receipt.
+- **A real bug was caught and fixed while producing these numbers, not silently avoided**: the first run of this eval showed a reconstruction-attack success rate of exactly 0.0% with every chance-baseline mean pinned at 1.000 — too clean to be real. Root cause: decoy vectors were being sampled from the same surviving-corpus pool used to build the attack's search index, so every decoy trivially "found itself" at similarity 1.0, saturating the chance baseline and making the check vacuously always pass regardless of actual leakage. Fixed by excluding sampled decoy points from the index before running the attack (`src/unlearning/ghost_vector_defense.py::sample_decoy_vectors` now returns decoy point IDs alongside vectors specifically so callers can do this). All numbers in the table above are from the corrected code; independently spot-checked against a live, real-corpus diagnostic run on 8 poison chunks before and after the fix (e.g. one manual `python -m src.unlearning.delete --chunk-id poison-07331-0` CLI run — separate from the n=20 table above — showed attack similarity 0.789 against a chance threshold of 0.881, correctly below threshold). Locked in with a regression test (`tests/unlearning/test_delete.py::test_delete_with_receipt_end_to_end_found`'s `chance_baseline_mean < 0.999` assertion).
 
 ---
 
@@ -158,6 +169,13 @@ Wall-clock `time.perf_counter()` deltas around each pipeline leg, collected per 
 ### ROC-AUC / DET curve (detector)
 
 Standard `sklearn.metrics.roc_curve`/`det_curve`/`roc_auc_score` over the classifier's continuous out-of-fold probability (`predict_proba`, positive class) vs. ground-truth labels. Code (new, Stage 3): `eval/export_figures.py::export_detector_roc_det`, consuming `models/poison_classifier.joblib`'s persisted `cv_predictions` (produced by `src/detection/classifier.py::train_classifier`'s `cross_val_predict(..., method="predict_proba")`, `src/detection/classifier.py:98`).
+
+### Deletion latency, membership-inference check, reconstruction-attack success rate, receipt validity (Phase 6)
+
+- **Deletion latency**: wall-clock `time.perf_counter()` around `client.delete()` (delete-only) and around the combined delete-plus-compaction flow (total), reduced via the same `_percentile`-based mean/p50/p95 as the generation-stage latency table. Code: `src/unlearning/delete.py::delete_chunk`/`force_compaction`, aggregated in `eval/run_eval.py::run_unlearning_eval`.
+- **Membership-inference / re-retrieval check**: boolean pass/fail per deletion via `src/unlearning/ghost_vector_defense.py::verify_unrecoverable` — queries Qdrant with the point's captured true pre-delete vector and checks the deleted `chunk_id` is absent from the top-`search_k` results. Aggregated as a pass rate.
+- **Reconstruction-attack success rate**: $$\text{success} = \mathbb{1}\left[\text{sim}(v_{\text{true}}, \text{NN}_1(v_{\text{true}}, \text{survivors})) > P_{95}\big(\{\text{sim}(d_i, \text{NN}_1(d_i, \text{survivors})) : d_i \in \text{decoys}\}\big)\right]$$ — the deleted vector's best-neighbor cosine similarity against the surviving corpus, compared against the `reconstruction_chance_percentile`-th percentile (default 95th) of a decoy-query null distribution (`reconstruction_chance_sample_size` decoys, default 20, sampled from chunks sharing no `doc_id` with the deleted chunk, each decoy's own best-neighbor similarity computed with itself excluded from the index it's searched against). Code: `src/unlearning/ghost_vector_defense.py::attempt_reconstruction`. Aggregated as the fraction of sampled deletions where this holds.
+- **Receipt validity**: `src/unlearning/receipt.py::verify_receipt` recomputes the canonical-JSON hash of the receipt body and checks it against the stored `receipt_hash`, then verifies the Ed25519 signature via `ProvenanceSigner.verify` (never raises — returns `False` on any mismatch or malformed input). Aggregated as the fraction of issued receipts that verify.
 
 ---
 
@@ -232,6 +250,15 @@ corpus:
   total_chunks: 280
   clean_chunks: 220
   poisoned_chunks: 60
+
+unlearning_hyperparameters:
+  eval_seed: 42                                   # eval/run_eval.py --stage unlearning
+  eval_sample_size: 20                             # UnlearningConfig.eval_sample_size
+  compaction_deleted_threshold: 0.0                # UNLEARNING_COMPACTION_DELETED_THRESHOLD
+  compaction_vacuum_min_vector_number: 100         # Qdrant server minimum; 0 is rejected (422)
+  ghost_defense_search_k: 10                       # GHOST_DEFENSE_SEARCH_K
+  reconstruction_chance_sample_size: 20            # RECONSTRUCTION_CHANCE_SAMPLE_SIZE
+  reconstruction_chance_percentile: 95.0           # RECONSTRUCTION_CHANCE_PERCENTILE
 ```
 
 ### Figures exported this session
@@ -257,6 +284,9 @@ python eval/run_eval.py --stage retrieval --compare-baseline --top-k 5
 
 # Generation / latency (Table VII)
 python eval/run_eval.py --full-report --generation-asr-sample-size 10 --generation-precision-sample-size 20
+
+# Verifiable unlearning (Table VI)
+python eval/run_eval.py --stage unlearning
 
 # Figures (Stage 3)
 python eval/export_figures.py

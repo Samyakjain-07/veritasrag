@@ -51,16 +51,22 @@ from src.generation.config import DEFAULT_GENERATION_CONFIG as DEFAULT_GEN_CONFI
 from src.generation.faithfulness import FaithfulnessChecker  # noqa: E402
 from src.generation.generate import generate  # noqa: E402
 from src.generation.llm_client import get_llm  # noqa: E402
+from src.ingestion.provenance import ProvenanceSigner  # noqa: E402
 from src.retrieval.config import DEFAULT_CONFIG as DEFAULT_POLICY_CONFIG  # noqa: E402
 from src.retrieval.config import PolicyConfig  # noqa: E402
 from src.retrieval.policy_engine import FrequencyTracker, retrieve  # noqa: E402
-from src.vectorstore.qdrant_client import get_client, search  # noqa: E402
+from src.unlearning.config import DEFAULT_CONFIG as DEFAULT_UNLEARNING_CONFIG  # noqa: E402
+from src.unlearning.config import UnlearningConfig  # noqa: E402
+from src.unlearning.delete import delete_with_receipt  # noqa: E402
+from src.vectorstore.qdrant_client import get_client, search, upsert_manifest  # noqa: E402
 
 DEFAULT_MANIFEST_PATH = Path("eval/benchmarks/poison_manifest.json")
 DEFAULT_OUTPUT_PATH = Path("eval/benchmarks/detection_eval_results.json")
 DEFAULT_RETRIEVAL_OUTPUT_PATH = Path("eval/benchmarks/retrieval_eval_results.json")
 DEFAULT_GENERATION_OUTPUT_PATH = Path("eval/benchmarks/generation_eval_results.json")
 DEFAULT_FULL_REPORT_OUTPUT_PATH = Path("eval/benchmarks/full_report_results.json")
+DEFAULT_UNLEARNING_OUTPUT_PATH = Path("eval/benchmarks/unlearning_eval_results.json")
+UNLEARNING_EVAL_SCRATCH_COLLECTION = "veritasrag_unlearning_eval_scratch"
 DEFAULT_SEED = 42
 
 
@@ -265,6 +271,23 @@ def build_query_sets(
         if row_idx not in overlap_rows
     ]
     return asr_queries, precision_queries, len(overlap_rows)
+
+
+def _chunk_to_question_map(
+    asr_queries: list[RetrievalQuery], precision_queries: list[RetrievalQuery]
+) -> dict[str, str]:
+    """Flatten both query sets into chunk_id -> its associated question, for
+    run_unlearning_eval's before/after removal-precision@k check -- a deleted
+    chunk just needs *a* query that used to retrieve it, poison or clean.
+    """
+    mapping: dict[str, str] = {}
+    for query in asr_queries:
+        for chunk_id in query.poison_chunk_ids:
+            mapping[chunk_id] = query.question
+    for query in precision_queries:
+        for chunk_id in query.relevant_chunk_ids:
+            mapping[chunk_id] = query.question
+    return mapping
 
 
 def _attack_succeeded(chunk_ids: list[str], poison_chunk_ids: frozenset[str]) -> bool:
@@ -638,6 +661,177 @@ def run_generation_eval(
     return results
 
 
+def _print_unlearning_report(metrics: dict) -> None:
+    print(f"{'latency (ms)':<24}{'mean':>10}{'p50':>10}{'p95':>10}")
+    for name, stage in metrics["latency_ms"].items():
+        print(f"{name:<24}{stage['mean']:>10.1f}{stage['p50']:>10.1f}{stage['p95']:>10.1f}")
+    print()
+    print(f"{'receipt_validity_rate':<36}{metrics['receipt_validity_rate']:>10.3f}")
+    print(f"{'membership_check_pass_rate':<36}{metrics['membership_check_pass_rate']:>10.3f}")
+    print(
+        f"{'reconstruction_attack_success_rate':<36}"
+        f"{metrics['reconstruction_attack_success_rate']:>10.3f}"
+    )
+    rp = metrics["removal_precision_at_k"]
+    print(f"{'removal_precision@k before':<36}{rp['before']:>10.3f}")
+    print(f"{'removal_precision@k after':<36}{rp['after']:>10.3f}")
+
+
+def run_unlearning_eval(
+    manifest_path: Path = DEFAULT_MANIFEST_PATH,
+    output_path: Path = DEFAULT_UNLEARNING_OUTPUT_PATH,
+    config: UnlearningConfig = DEFAULT_UNLEARNING_CONFIG,
+    policy_config: PolicyConfig = DEFAULT_POLICY_CONFIG,
+    sample_size: int | None = None,
+    seed: int = DEFAULT_SEED,
+    requester: str = "eval-harness",
+) -> dict:
+    """Phase 6 unlearning eval: deletes a seeded random sample of chunks
+    against a disposable scratch collection -- `UNLEARNING_EVAL_SCRATCH_COLLECTION`,
+    always torn down in a `finally`, never the live corpus -- and benchmarks
+    deletion latency, receipt gen/verify time and validity, the ghost-vector-
+    defense membership-inference check, the corpus-level reconstruction-
+    attack success rate vs. chance baseline, and removal-precision@k
+    before/after each deletion: the full set of Table VI metrics `results.md`
+    is waiting on.
+    """
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    asr_queries, precision_queries, _ = build_query_sets(manifest)
+    chunk_to_question = _chunk_to_question_map(asr_queries, precision_queries)
+
+    rng = random.Random(seed)
+    n_sample = min(sample_size or config.eval_sample_size, len(chunk_to_question))
+    sampled_chunk_ids = rng.sample(sorted(chunk_to_question), n_sample)
+
+    embedder = Embedder()
+    client = get_client()
+    signer = ProvenanceSigner()
+
+    if client.collection_exists(UNLEARNING_EVAL_SCRATCH_COLLECTION):
+        client.delete_collection(UNLEARNING_EVAL_SCRATCH_COLLECTION)
+    upsert_manifest(
+        client, manifest, embedder, signer, collection_name=UNLEARNING_EVAL_SCRATCH_COLLECTION
+    )
+
+    delete_latencies: list[float] = []
+    compaction_latencies: list[float] = []
+    total_latencies: list[float] = []
+    receipt_gen_latencies: list[float] = []
+    receipt_verify_latencies: list[float] = []
+    receipt_valid_flags: list[bool] = []
+    membership_pass_flags: list[bool] = []
+    reconstruction_exceeds_flags: list[bool] = []
+    precision_before: list[float] = []
+    precision_after: list[float] = []
+
+    try:
+        for i, chunk_id in enumerate(sampled_chunk_ids):
+            question = chunk_to_question[chunk_id]
+            query_vector = embedder.embed_one(question).tolist()
+
+            hits_before = search(
+                client,
+                query_vector,
+                collection_name=UNLEARNING_EVAL_SCRATCH_COLLECTION,
+                top_k=policy_config.retrieval_top_k,
+            )
+            chunk_ids_before = [hit.payload["chunk_id"] for hit in hits_before]
+            precision_before.append(_precision_at_k(chunk_ids_before, frozenset({chunk_id})))
+
+            bundle = delete_with_receipt(
+                client,
+                chunk_id,
+                requester=requester,
+                collection_name=UNLEARNING_EVAL_SCRATCH_COLLECTION,
+                config=config,
+                signer=signer,
+                run_reconstruction_check=True,
+                decoy_seed=seed,
+            )
+
+            hits_after = search(
+                client,
+                query_vector,
+                collection_name=UNLEARNING_EVAL_SCRATCH_COLLECTION,
+                top_k=policy_config.retrieval_top_k,
+            )
+            chunk_ids_after = [hit.payload["chunk_id"] for hit in hits_after]
+            precision_after.append(_precision_at_k(chunk_ids_after, frozenset({chunk_id})))
+
+            deletion = bundle.deletion
+            delete_latencies.append(deletion.delete_latency_ms)
+            if deletion.compaction_latency_ms is not None:
+                compaction_latencies.append(deletion.compaction_latency_ms)
+                total_latencies.append(deletion.delete_latency_ms + deletion.compaction_latency_ms)
+            else:
+                total_latencies.append(deletion.delete_latency_ms)
+            receipt_gen_latencies.append(bundle.receipt_gen_latency_ms)
+            receipt_verify_latencies.append(bundle.receipt_verify_latency_ms)
+            receipt_valid_flags.append(bundle.receipt_valid)
+            if bundle.membership_check_passed is not None:
+                membership_pass_flags.append(bundle.membership_check_passed)
+            if bundle.reconstruction_check is not None:
+                reconstruction_exceeds_flags.append(bundle.reconstruction_check.exceeds_chance)
+
+            if (i + 1) % 5 == 0 or (i + 1) == len(sampled_chunk_ids):
+                print(f"  deleted: {i + 1}/{len(sampled_chunk_ids)}")
+    finally:
+        client.delete_collection(UNLEARNING_EVAL_SCRATCH_COLLECTION)
+
+    def _stage_latency(values: list[float]) -> dict[str, float]:
+        return {
+            "mean": fmean(values) if values else 0.0,
+            "p50": _percentile(values, 50),
+            "p95": _percentile(values, 95),
+        }
+
+    metrics = {
+        "n_deleted": len(sampled_chunk_ids),
+        "latency_ms": {
+            "delete_latency_ms": _stage_latency(delete_latencies),
+            "compaction_latency_ms": _stage_latency(compaction_latencies),
+            "total_deletion_latency_ms": _stage_latency(total_latencies),
+            "receipt_gen_latency_ms": _stage_latency(receipt_gen_latencies),
+            "receipt_verify_latency_ms": _stage_latency(receipt_verify_latencies),
+        },
+        "receipt_validity_rate": (
+            sum(receipt_valid_flags) / len(receipt_valid_flags) if receipt_valid_flags else 0.0
+        ),
+        "membership_check_pass_rate": (
+            sum(membership_pass_flags) / len(membership_pass_flags)
+            if membership_pass_flags
+            else 0.0
+        ),
+        "reconstruction_attack_success_rate": (
+            sum(reconstruction_exceeds_flags) / len(reconstruction_exceeds_flags)
+            if reconstruction_exceeds_flags
+            else 0.0
+        ),
+        "removal_precision_at_k": {
+            "before": fmean(precision_before) if precision_before else 0.0,
+            "after": fmean(precision_after) if precision_after else 0.0,
+            "top_k": policy_config.retrieval_top_k,
+        },
+    }
+
+    print()
+    _print_unlearning_report(metrics)
+
+    results = {
+        "manifest_path": str(manifest_path),
+        "n_chunks": len(manifest),
+        "n_eligible_for_sampling": len(chunk_to_question),
+        "seed": seed,
+        "config": asdict(config),
+        "metrics": metrics,
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
+    print(f"\nWrote results to {output_path}")
+
+    return results
+
+
 def run_full_report(
     manifest_path: Path = DEFAULT_MANIFEST_PATH,
     output_path: Path = DEFAULT_FULL_REPORT_OUTPUT_PATH,
@@ -734,7 +928,9 @@ def run_full_report(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--stage", choices=["detection", "retrieval", "generation"], default="detection"
+        "--stage",
+        choices=["detection", "retrieval", "generation", "unlearning"],
+        default="detection",
     )
     parser.add_argument(
         "--full-report",
@@ -788,6 +984,13 @@ def main() -> None:
         help="[generation/full-report] evaluate only a seeded random subsample of "
         "precision queries instead of the full set (each query is a real LLM call).",
     )
+    parser.add_argument(
+        "--unlearning-sample-size",
+        type=int,
+        default=None,
+        help="[unlearning] delete only a seeded random subsample instead of "
+        "UnlearningConfig.eval_sample_size.",
+    )
     args = parser.parse_args()
 
     if args.full_report:
@@ -820,6 +1023,13 @@ def main() -> None:
             output_path=args.output or DEFAULT_RETRIEVAL_OUTPUT_PATH,
             compare_baseline=args.compare_baseline,
             config=config,
+        )
+    elif args.stage == "unlearning":
+        run_unlearning_eval(
+            manifest_path=args.manifest,
+            output_path=args.output or DEFAULT_UNLEARNING_OUTPUT_PATH,
+            sample_size=args.unlearning_sample_size,
+            seed=args.seed,
         )
     else:
         run_generation_eval(

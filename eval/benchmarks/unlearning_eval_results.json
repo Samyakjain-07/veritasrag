@@ -1,0 +1,60 @@
+{
+  "manifest_path": "eval/benchmarks/poison_manifest.json",
+  "n_chunks": 280,
+  "n_eligible_for_sampling": 252,
+  "seed": 42,
+  "config": {
+    "unlearning_collection_name": "veritasrag_chunks",
+    "delete_wait": true,
+    "compaction_deleted_threshold": 0.0,
+    "compaction_vacuum_min_vector_number": 100,
+    "compaction_poll_for_green": true,
+    "compaction_poll_timeout_s": 10.0,
+    "compaction_poll_interval_s": 0.1,
+    "compaction_restore_original_config": true,
+    "ghost_defense_search_k": 10,
+    "reconstruction_chance_sample_size": 20,
+    "reconstruction_chance_percentile": 95.0,
+    "reconstruction_top_k_diagnostic": 3,
+    "receipt_dir": "receipts",
+    "eval_sample_size": 20
+  },
+  "metrics": {
+    "n_deleted": 20,
+    "latency_ms": {
+      "delete_latency_ms": {
+        "mean": 9.327393049898092,
+        "p50": 7.168837500103109,
+        "p95": 24.940450250278452
+      },
+      "compaction_latency_ms": {
+        "mean": 23.27137279994531,
+        "p50": 19.27253399981055,
+        "p95": 40.33643290003966
+      },
+      "total_deletion_latency_ms": {
+        "mean": 32.5987658498434,
+        "p50": 31.735532999846328,
+        "p95": 54.59074304953903
+      },
+      "receipt_gen_latency_ms": {
+        "mean": 1.4891588499722275,
+        "p50": 1.096729500204674,
+        "p95": 5.3418232992498815
+      },
+      "receipt_verify_latency_ms": {
+        "mean": 0.30761749994780985,
+        "p50": 0.2471259999765607,
+        "p95": 0.6187655505527802
+      }
+    },
+    "receipt_validity_rate": 1.0,
+    "membership_check_pass_rate": 1.0,
+    "reconstruction_attack_success_rate": 0.05,
+    "removal_precision_at_k": {
+      "before": 0.2,
+      "after": 0.0,
+      "top_k": 5
+    }
+  }
+}
