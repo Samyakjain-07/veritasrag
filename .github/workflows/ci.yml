@@ -16,9 +16,6 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  PIP_NO_CACHE_DIR: "1"
-
 jobs:
   lint:
     runs-on: ubuntu-latest
