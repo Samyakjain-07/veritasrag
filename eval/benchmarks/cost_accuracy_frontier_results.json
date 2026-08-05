@@ -2,11 +2,11 @@
   "manifest_path": "eval/benchmarks/poison_manifest.json",
   "n_chunks": 280,
   "seed": 42,
-  "n_asr_queries_used": 6,
-  "n_precision_queries_used": 10,
+  "n_asr_queries_used": 20,
+  "n_precision_queries_used": 106,
   "n_asr_queries_total": 20,
   "n_precision_queries_total": 106,
-  "include_generation": false,
+  "include_generation": true,
   "base_policy_config": {
     "retrieval_top_k": 5,
     "retrieval_overfetch_factor": 3.0,
@@ -30,64 +30,109 @@
   "layers": {
     "undefended": {
       "asr": 1.0,
-      "precision_at_k": 0.42000000000000004,
+      "precision_at_k": 0.34528301886792456,
       "latency_ms": {
-        "mean": 128.95139618751728,
-        "p50": 115.03833749975456,
-        "p95": 261.9795629998407
+        "mean": 49.912438246041894,
+        "p50": 31.319263500336092,
+        "p95": 110.06019550086421
       },
       "pareto_optimal": false
     },
     "full_defense": {
       "asr": 0.0,
-      "precision_at_k": 0.42000000000000004,
+      "precision_at_k": 0.34716981132075475,
       "latency_ms": {
-        "mean": 12686.19621806249,
-        "p50": 11868.772506000823,
-        "p95": 17443.617500249275
+        "mean": 11687.951962238047,
+        "p50": 10667.303005500798,
+        "p95": 16682.430012000168
       },
-      "pareto_optimal": false
+      "pareto_optimal": false,
+      "generation": {
+        "generation_asr": 0.0,
+        "faithfulness_precision": 0.8333333333333334,
+        "generation_latency_ms": {
+          "mean": 3961.5084961249067,
+          "p50": 3163.049997499911,
+          "p95": 8304.55868624958
+        }
+      }
     },
     "no_detection_scoring": {
       "asr": 1.0,
-      "precision_at_k": 0.42000000000000004,
+      "precision_at_k": 0.34528301886792456,
       "latency_ms": {
-        "mean": 64.59804443738904,
-        "p50": 53.82000000008702,
-        "p95": 123.88525774986192
+        "mean": 42.94645043656991,
+        "p50": 31.161797000095248,
+        "p95": 76.07775025007868
       },
-      "pareto_optimal": true
+      "pareto_optimal": true,
+      "generation": {
+        "generation_asr": 0.0,
+        "faithfulness_precision": 0.9333333333333333,
+        "generation_latency_ms": {
+          "mean": 3385.307125499594,
+          "p50": 2933.7219449998884,
+          "p95": 5646.272472749024
+        }
+      }
     },
     "no_tier_gating": {
       "asr": 0.0,
-      "precision_at_k": 0.42000000000000004,
+      "precision_at_k": 0.34716981132075475,
       "latency_ms": {
-        "mean": 11619.617980749696,
-        "p50": 10780.577444499613,
-        "p95": 15037.331560748953
+        "mean": 10097.654221896904,
+        "p50": 9920.215679000648,
+        "p95": 11517.552441250245
       },
-      "pareto_optimal": false
+      "pareto_optimal": true,
+      "generation": {
+        "generation_asr": 0.0,
+        "faithfulness_precision": 0.8333333333333334,
+        "generation_latency_ms": {
+          "mean": 2908.7967533751,
+          "p50": 2403.8321770003677,
+          "p95": 4424.381484949754
+        }
+      }
     },
     "no_frequency_tracking": {
       "asr": 0.0,
-      "precision_at_k": 0.42000000000000004,
+      "precision_at_k": 0.34716981132075475,
       "latency_ms": {
-        "mean": 11214.540772750524,
-        "p50": 10503.751209500479,
-        "p95": 13687.399988499692
+        "mean": 10577.433950142813,
+        "p50": 9972.497343000214,
+        "p95": 12374.699683498875
       },
-      "pareto_optimal": true
+      "pareto_optimal": false,
+      "generation": {
+        "generation_asr": 0.0,
+        "faithfulness_precision": 0.8,
+        "generation_latency_ms": {
+          "mean": 2795.0855716251226,
+          "p50": 2587.3484089997874,
+          "p95": 4599.08748174921
+        }
+      }
     },
     "no_faithfulness_check": {
       "asr": 0.0,
-      "precision_at_k": 0.42000000000000004,
+      "precision_at_k": 0.34716981132075475,
       "latency_ms": {
-        "mean": 12686.19621806249,
-        "p50": 11868.772506000823,
-        "p95": 17443.617500249275
+        "mean": 11687.951962238047,
+        "p50": 10667.303005500798,
+        "p95": 16682.430012000168
       },
       "note": "retrieval layer identical to full_defense -- faithfulness only applies at generation time, see its generation sub-metrics",
-      "pareto_optimal": false
+      "pareto_optimal": false,
+      "generation": {
+        "generation_asr": null,
+        "faithfulness_precision": null,
+        "generation_latency_ms": {
+          "mean": 1621.7538313749174,
+          "p50": 1760.2061365005284,
+          "p95": 2215.799744549713
+        }
+      }
     }
   }
 }
