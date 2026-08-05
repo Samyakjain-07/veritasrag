@@ -401,3 +401,48 @@ Both artifacts already existed (built in Phase 9, structurally exercised again b
 - The stronger `docker compose down && up` persistence proof for §4.3 wasn't run (blocked by the sandbox's permission classifier, not attempted around) — worth doing explicitly if a future session gets an approval for it, though the evidence gathered here is already reasonably convincing.
 - §4.5/§4.6 remain untouched, same as after the §4.1/§4.2 session.
 - All four of §4.1–§4.4 are now done. §4.5 (tunnel demo) and §4.6 (longer-term hosting) are the only PLAN.md §4 items left, and neither was requested this session.
+
+## Deployment — PLAN.md §4.5 (tunnel demo) & §4.6 (longer-term hosting) — DONE
+
+Both live-verified against the running §4.1 stack (`veritasrag-{qdrant,api,dashboard}`, unchanged, still `healthy` throughout this session). Neither `cloudflared` nor `ngrok` nor `caddy` was pre-installed, and this sandbox has no passwordless `sudo` (`sudo -n true` → "interactive authentication is required"), so both tools were fetched as static binaries into the scratch dir rather than via `apt install` — a deliberate environment adaptation, flagged rather than silently treated as equivalent to PLAN.md's literal `sudo apt install caddy`.
+
+**§4.5 required a check-in before running**, since it means briefly exposing an unauthenticated API (zero auth middleware, per Phase 8's own documented gap) backed by a real billing `OPENAI_API_KEY` to the public internet — asked the user via `AskUserQuestion` first; chose "live tunnel test, then tear down."
+
+- Downloaded `cloudflared` (2026.7.3, official GitHub release binary, no account needed for a "quick tunnel") to the scratch dir, confirmed with `--version`.
+- `cloudflared tunnel --url http://localhost:8000` → live public HTTPS URL `https://carey-click-specialties-loud.trycloudflare.com` (Cloudflare's own connectivity pre-checks all `PASS`ed).
+- **Live end-to-end proof through the tunnel, not just "it started"**: `GET /health` → `{"status":"ok"}`; `POST /query` with the same Naoroji question used in every prior phase's live verification → real round trip, real answer JSON (5 citations, all `allow`), 71.9s wall time. This particular run abstained (`faithfulness_score: 0.0`) rather than returning the Naoroji fact — same already-documented retrieval-precision@k/abstention-conflation caveat as the §4.1 session's run, not a tunnel defect.
+- Torn down immediately after the one verification call: killed the `cloudflared` process, confirmed the public URL now returns Cloudflare `530` (origin unreachable) and `localhost:8000` is still `{"status":"ok"}` — the tunnel is gone, the local stack is untouched.
+- **ngrok (Option B) was not installed/tested** — cloudflared's account-less quick tunnel already fully satisfies §4.5's literal requirement ("a public HTTPS URL for the duration of the tunnel"), and opening a second public-exposure window to prove the same capability twice wasn't worth it. Not independently verified this session: whether ngrok's current free tier still permits an anonymous tunnel without a signup/authtoken — PLAN.md lists it as a plain fallback command, worth checking before relying on it if cloudflared is ever unavailable.
+
+**§4.6**: PLAN.md's literal example (`yourdomain.com { reverse_proxy localhost:8000 }` + `sudo systemctl restart caddy`) needs a real public domain with DNS pointed at this host, plus root, for Caddy's automatic-HTTPS (ACME) to mean anything — none of which exist in this sandbox or were in scope to obtain. Per the user's chosen option ("verify tooling/config locally, document the rest"), scope was: prove the one mechanism PLAN.md's Caddyfile actually depends on (`reverse_proxy localhost:8000`) really works, and document the rest as a runbook rather than faking a deployment.
+
+- Downloaded the `caddy` static binary (v2.11.4, official `caddyserver.com` download API) the same no-root way as `cloudflared`.
+- First live attempt (`{ auto_https off }` not yet set) failed exactly as expected in a rootless sandbox: `Error: ... listening on :80: bind: permission denied` — a real, caught-not-hypothetical error, since Caddy's auto-HTTPS machinery tries to bind :80 for the HTTP→HTTPS redirect even for a plain reverse-proxy site block. Fixed by adding a global `auto_https off` and using `http://localhost:9080` as the site address instead of a real domain.
+- `caddy validate --config Caddyfile` → `Valid configuration`.
+- Ran it live: `curl http://localhost:9080/health` → `{"status":"ok"}`, HTTP 200 — genuinely proxied through Caddy to the containerized API on `:8000`, not just a config that parses. Killed the process immediately after; confirmed `:9080` stops responding and the underlying stack (`:8000`) is unaffected.
+- **What this does *not* prove, stated plainly rather than glossed over**: no real domain, DNS, TLS certificate, or root-owned `systemctl` service was exercised — that's the actual "longer-term hosting" part of §4.6, and it needs a real VM/college-server or a Railway/Render/Fly.io account with billing, none of which this agent has credentials for. `flyctl`/`railway`/`render` CLIs aren't installed either; not attempted, same reason. §4.6 is "done" in the scope the user chose (PLAN.md's shape verified against the real tool, the one config directive that matters live-proven to work) — a persistent public demo does not exist as a result of this session, and would need the user's own accounts to set up.
+- Both scratch binaries (`cloudflared`, `caddy`) and the test `Caddyfile` live only in this session's scratchpad dir, not the repo — throwaway, not meant to be committed.
+
+### Eval numbers (this session)
+
+`cloudflared tunnel --url http://localhost:8000`: public URL live-verified end to end (`/health` 200, `/query` 200 with real citations/answer, 71.9s wall); torn down, public URL confirmed dead (`530`) while `localhost:8000` stayed healthy throughout. `caddy validate`: clean. `caddy run` (`localhost:9080 → reverse_proxy localhost:8000`, `auto_https off`): `/health` through the proxy → 200 `{"status":"ok"}`; torn down, `:9080` confirmed dead afterward. No code changes made this session (no repo files touched); no `pytest`/`ruff` re-run since nothing in `src/`/`tests/` changed. `docker ps` before and after: all 3 containers unchanged, `healthy`, `RestartCount: 0`.
+
+### Outstanding after this session
+
+- All six of PLAN.md §4.1–§4.6 have now been touched/verified at least once. §4.5's live tunnel and §4.6's live reverse-proxy mechanism are both real, teardown-confirmed live verifications — but §4.6's actual "longer-term" deliverable (a persistent public deployment on a real VM or Railway/Render/Fly.io) was explicitly out of scope this session (no credentials/accounts available to the agent) and remains a task only the user can complete, using the now-verified `Dockerfile`/`docker-compose.prod.yml`/Caddy-reverse-proxy shape as the recipe.
+- ngrok was never installed/tested (see above) — low priority, since cloudflared already covers §4.5, but worth a quick check if it's ever needed as a fallback.
+- ~~The stronger `docker compose down && up` persistence proof for §4.3~~ **Done, later in this same session** — see below.
+
+### §4.3 follow-up (same session): the `docker compose down && up` persistence proof
+
+Previously blocked by the sandbox's permission classifier (tearing down the running demo stack read as an outward/hard-to-reverse action worth confirming); the user explicitly asked for it this time, so proceeded directly without re-asking.
+
+- Captured state on the then-running containers (started in the §4.1 session, so this also incidentally re-confirms multi-session persistence): `points_count: 280`, both Ed25519 key files' SHA-256 fingerprints (`api` and `dashboard` containers), receipts count (`0`), `observability/traces.jsonl` line count (`17`).
+- `docker compose -f docker-compose.prod.yml down` (no `-v`): all 3 containers + the `veritasrag_default` network removed. Confirmed via `docker ps -a` that no `veritas*` containers remained, while `docker volume ls` showed all 6 named volumes (`qdrant_data`, `veritas_keys`, `veritas_models`, `veritas_receipts`, `veritas_observability`, `hf_cache`) still present.
+- `docker compose -f docker-compose.prod.yml up -d` (no `--build` — no source changes to rebuild): fresh containers created (new container IDs: `qdrant f5c18eb7714a`, `api fa01badf3957`, `dashboard 00633d398155`, all different from the pre-teardown containers), all reached `healthy` within ~44s (`api`'s health-check `start_period` is the long pole, as documented since Phase 9).
+- Re-captured the exact same state checks on the new containers: `points_count: 280` (unchanged), both key fingerprints byte-identical to pre-teardown, receipts count `0` (unchanged), trace line count `17` (unchanged). `GET /health` → `200`, dashboard root → `200`.
+- **This is the strongest form of the persistence proof PLAN.md §4.3 implies** (durable named volumes vs. the dev compose file's bind mount) — genuinely new containers, same data, confirmed via content hashes rather than trusting container uptime or restart counts.
+
+#### Eval numbers (§4.3 follow-up)
+
+Pre-teardown → post-recreation, all identical: `points_count` 280 → 280; private-key SHA-256 `2644afff...67631d` → unchanged; public-key SHA-256 `2a0f1e66...87d33f` → unchanged (both `api` and `dashboard`); receipts count 0 → 0; `traces.jsonl` line count 17 → 17. All 3 containers `healthy` post-recreation with fresh container IDs. No code changes; no `pytest`/`ruff` re-run since nothing changed.
