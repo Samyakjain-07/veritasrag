@@ -16,6 +16,19 @@ version = "0.1.0"
 description = "Trustworthy RAG integrity layer: poisoning detection, cryptographic provenance, and verifiable unlearning."
 requires-python = ">=3.11"
 dependencies = [
+    # Ingestion / document loaders (Phase 1, src/ingestion/loaders.py) --
+    # pypdf backs LangChain's PyPDFLoader, beautifulsoup4/lxml back
+    # BSHTMLLoader, fpdf2 (imported as `fpdf`) generates synthetic PDF
+    # fixtures in tests/ingestion/test_loaders.py. Installed into `.venv`
+    # since Phase 1 but never declared here -- a real GitHub Actions CI run
+    # (Phase 9) caught the gap live: `ModuleNotFoundError: No module named
+    # 'fpdf'` during `pytest tests/` collection, since CI (and the Phase 9
+    # Docker images) install strictly from this list instead of the
+    # incrementally-accumulated dev `.venv`.
+    "pypdf",
+    "beautifulsoup4",
+    "lxml",
+    "fpdf2",
     # Orchestration
     "langgraph",
     "langchain",
