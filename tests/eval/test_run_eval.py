@@ -6,10 +6,13 @@ from eval.run_eval import (
     DEFAULT_MANIFEST_PATH,
     _attack_succeeded,
     _chunk_to_question_map,
+    _generation_attack_succeeded,
     _percentile,
     _precision_at_k,
     build_query_sets,
 )
+from src.generation.faithfulness import ClaimFaithfulness, FaithfulnessReport
+from src.generation.generate import GenerationResult
 
 
 def _load_real_manifest() -> list[dict]:
@@ -124,3 +127,52 @@ def test_percentile_p95_is_close_to_max_for_small_sample():
     values = [10.0, 20.0, 30.0, 40.0, 100.0]
 
     assert _percentile(values, 95) >= _percentile(values, 50)
+
+
+def _generation_result(claims: list[ClaimFaithfulness]) -> GenerationResult:
+    report = FaithfulnessReport(
+        claims=claims,
+        faithfulness_score=1.0,
+        ungrounded_claims=[],
+    )
+    return GenerationResult(query="q", answer="answer", context=[], faithfulness=report)
+
+
+def test_generation_attack_succeeded_true_when_grounded_in_poison_chunk():
+    generation = _generation_result(
+        [
+            ClaimFaithfulness(
+                claim="c", best_chunk_id="poison-1", entailment_score=0.9, grounded=True
+            )
+        ]
+    )
+
+    assert _generation_attack_succeeded(generation, frozenset({"poison-1"})) is True
+
+
+def test_generation_attack_succeeded_false_when_grounded_in_clean_chunk():
+    generation = _generation_result(
+        [ClaimFaithfulness(claim="c", best_chunk_id="clean-1", entailment_score=0.9, grounded=True)]
+    )
+
+    assert _generation_attack_succeeded(generation, frozenset({"poison-1"})) is False
+
+
+def test_generation_attack_succeeded_false_when_not_grounded():
+    """A claim can carry a poisoned best_chunk_id yet still be ungrounded
+    (below the entailment threshold) -- only a grounded claim counts."""
+    generation = _generation_result(
+        [
+            ClaimFaithfulness(
+                claim="c", best_chunk_id="poison-1", entailment_score=0.1, grounded=False
+            )
+        ]
+    )
+
+    assert _generation_attack_succeeded(generation, frozenset({"poison-1"})) is False
+
+
+def test_generation_attack_succeeded_false_when_no_faithfulness_report():
+    generation = GenerationResult(query="q", answer="answer", context=[], faithfulness=None)
+
+    assert _generation_attack_succeeded(generation, frozenset({"poison-1"})) is False

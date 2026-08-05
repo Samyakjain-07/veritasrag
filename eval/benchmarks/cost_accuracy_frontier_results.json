@@ -1,0 +1,93 @@
+{
+  "manifest_path": "eval/benchmarks/poison_manifest.json",
+  "n_chunks": 280,
+  "seed": 42,
+  "n_asr_queries_used": 6,
+  "n_precision_queries_used": 10,
+  "n_asr_queries_total": 20,
+  "n_precision_queries_total": 106,
+  "include_generation": false,
+  "base_policy_config": {
+    "retrieval_top_k": 5,
+    "retrieval_overfetch_factor": 3.0,
+    "retrieval_collection_name": "veritasrag_chunks",
+    "allow_quarantined_tier": false,
+    "poison_downweight_threshold_verified": 0.55,
+    "poison_hard_drop_threshold_verified": 0.85,
+    "poison_downweight_threshold_unverified": 0.35,
+    "poison_hard_drop_threshold_unverified": 0.65,
+    "downweight_floor_multiplier": 0.2,
+    "frequency_zscore_threshold": 3.0,
+    "frequency_min_samples": 20,
+    "frequency_hard_block": false,
+    "cluster_reference_sample_size": 128,
+    "enable_detection_scoring": true,
+    "enable_tier_gating": true,
+    "enable_frequency_tracking": true,
+    "exit_criteria_asr_reduction_pp_min": 30.0,
+    "exit_criteria_precision_loss_relative_pct_max": 15.0
+  },
+  "layers": {
+    "undefended": {
+      "asr": 1.0,
+      "precision_at_k": 0.42000000000000004,
+      "latency_ms": {
+        "mean": 128.95139618751728,
+        "p50": 115.03833749975456,
+        "p95": 261.9795629998407
+      },
+      "pareto_optimal": false
+    },
+    "full_defense": {
+      "asr": 0.0,
+      "precision_at_k": 0.42000000000000004,
+      "latency_ms": {
+        "mean": 12686.19621806249,
+        "p50": 11868.772506000823,
+        "p95": 17443.617500249275
+      },
+      "pareto_optimal": false
+    },
+    "no_detection_scoring": {
+      "asr": 1.0,
+      "precision_at_k": 0.42000000000000004,
+      "latency_ms": {
+        "mean": 64.59804443738904,
+        "p50": 53.82000000008702,
+        "p95": 123.88525774986192
+      },
+      "pareto_optimal": true
+    },
+    "no_tier_gating": {
+      "asr": 0.0,
+      "precision_at_k": 0.42000000000000004,
+      "latency_ms": {
+        "mean": 11619.617980749696,
+        "p50": 10780.577444499613,
+        "p95": 15037.331560748953
+      },
+      "pareto_optimal": false
+    },
+    "no_frequency_tracking": {
+      "asr": 0.0,
+      "precision_at_k": 0.42000000000000004,
+      "latency_ms": {
+        "mean": 11214.540772750524,
+        "p50": 10503.751209500479,
+        "p95": 13687.399988499692
+      },
+      "pareto_optimal": true
+    },
+    "no_faithfulness_check": {
+      "asr": 0.0,
+      "precision_at_k": 0.42000000000000004,
+      "latency_ms": {
+        "mean": 12686.19621806249,
+        "p50": 11868.772506000823,
+        "p95": 17443.617500249275
+      },
+      "note": "retrieval layer identical to full_defense -- faithfulness only applies at generation time, see its generation sub-metrics",
+      "pareto_optimal": false
+    }
+  }
+}

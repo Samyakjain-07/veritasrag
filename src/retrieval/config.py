@@ -106,6 +106,24 @@ class PolicyConfig:
         default_factory=lambda: _env_int("CLUSTER_REFERENCE_SAMPLE_SIZE", "128")
     )
 
+    # Phase 9 defensive-layer toggles, read by policy_engine.py's `_gate`/
+    # `retrieve`. Each defaults to True (== current, pre-Phase-9 behavior,
+    # unchanged for every existing caller) and turning one off skips that
+    # layer's actual computation -- not just its triggering threshold -- so
+    # `eval/cost_accuracy_sweep.py` measures a real cost difference, not just
+    # an accuracy one. Raising `poison_hard_drop_threshold_*` above 1.0 would
+    # disable *triggering* the poison-score gate but `retrieve()` would still
+    # pay DetectionPipeline's full per-candidate scoring cost either way.
+    enable_detection_scoring: bool = field(
+        default_factory=lambda: _env_bool("POLICY_ENABLE_DETECTION_SCORING", "true")
+    )
+    enable_tier_gating: bool = field(
+        default_factory=lambda: _env_bool("POLICY_ENABLE_TIER_GATING", "true")
+    )
+    enable_frequency_tracking: bool = field(
+        default_factory=lambda: _env_bool("POLICY_ENABLE_FREQUENCY_TRACKING", "true")
+    )
+
     # Exit-criteria thresholds (PLAN.md Phase 4: "the minor-project gate"),
     # config-driven like every other threshold here so eval/run_eval.py never
     # hardcodes them.

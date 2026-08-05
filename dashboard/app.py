@@ -13,13 +13,27 @@ directory.
 
 from __future__ import annotations
 
-import pandas as pd
-import streamlit as st
-from src.observability.config import DEFAULT_CONFIG as OBSERVABILITY_CONFIG
-from src.unlearning.config import DEFAULT_CONFIG as UNLEARNING_CONFIG
-from src.vectorstore.schema import TrustTier
+import sys
+from pathlib import Path
 
-from dashboard.data import (
+# `streamlit run` only adds this file's own directory (dashboard/) to
+# sys.path, not the repo root -- unlike `pytest` (which resolves `import
+# src...`/`import dashboard...` via `pythonpath = ["."]` in pyproject.toml),
+# Streamlit has no equivalent config hook. Without this, `import src.*` and
+# `import dashboard.*` below fail with `ModuleNotFoundError: No module named
+# 'src'` regardless of which directory `streamlit run` is invoked from. This
+# must run before any `src`/`dashboard` import.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+import pandas as pd  # noqa: E402
+import streamlit as st  # noqa: E402
+from src.observability.config import DEFAULT_CONFIG as OBSERVABILITY_CONFIG  # noqa: E402
+from src.unlearning.config import DEFAULT_CONFIG as UNLEARNING_CONFIG  # noqa: E402
+from src.vectorstore.schema import TrustTier  # noqa: E402
+
+from dashboard.data import (  # noqa: E402
     detection_rate_timeseries,
     live_trust_tier_distribution,
     load_trace_events,

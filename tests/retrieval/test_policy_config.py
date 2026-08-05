@@ -51,6 +51,26 @@ def test_config_instances_are_independent():
     assert config_b.retrieval_top_k != 1
 
 
+def test_defensive_layer_toggles_default_enabled():
+    config = PolicyConfig()
+
+    assert config.enable_detection_scoring is True
+    assert config.enable_tier_gating is True
+    assert config.enable_frequency_tracking is True
+
+
+def test_defensive_layer_toggles_env_var_override(monkeypatch):
+    monkeypatch.setenv("POLICY_ENABLE_DETECTION_SCORING", "false")
+    monkeypatch.setenv("POLICY_ENABLE_TIER_GATING", "false")
+    monkeypatch.setenv("POLICY_ENABLE_FREQUENCY_TRACKING", "false")
+
+    config = PolicyConfig()
+
+    assert config.enable_detection_scoring is False
+    assert config.enable_tier_gating is False
+    assert config.enable_frequency_tracking is False
+
+
 def test_exit_criteria_thresholds_are_config_driven(monkeypatch):
     monkeypatch.setenv("EXIT_CRITERIA_ASR_REDUCTION_PP_MIN", "40.0")
     monkeypatch.setenv("EXIT_CRITERIA_PRECISION_LOSS_RELATIVE_PCT_MAX", "10.0")

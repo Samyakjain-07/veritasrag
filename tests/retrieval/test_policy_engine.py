@@ -1,6 +1,9 @@
+from types import SimpleNamespace
+
 import pytest
+from src.retrieval import policy_engine
 from src.retrieval.config import PolicyConfig
-from src.retrieval.policy_engine import FrequencyTracker, GateDecision, _gate
+from src.retrieval.policy_engine import FrequencyTracker, GateDecision, _gate, retrieve
 from src.vectorstore.schema import TrustTier
 
 
@@ -106,6 +109,24 @@ def test_verified_band_is_strictly_more_permissive_than_unverified():
     assert unverified_decision == GateDecision.DOWNWEIGHT
 
 
+def test_tier_gating_disabled_ignores_quarantine_categorical_drop():
+    config = _gate_config(enable_tier_gating=False)
+
+    decision, _, reason = _gate(TrustTier.QUARANTINED, 0.0, config)
+
+    assert decision == GateDecision.ALLOW
+    assert reason is None
+
+
+def test_tier_gating_disabled_uses_unverified_band_for_every_tier():
+    config = _gate_config(enable_tier_gating=False)  # unverified band: (0.3, 0.6)
+    poison_score = 0.4  # inside unverified's band, below verified's own (0.6, 0.9)
+
+    decision, _, _ = _gate(TrustTier.VERIFIED, poison_score, config)
+
+    assert decision == GateDecision.DOWNWEIGHT
+
+
 def test_frequency_tracker_records_counts():
     tracker = FrequencyTracker()
 
@@ -164,3 +185,89 @@ def test_frequency_tracker_unseen_chunk_id_does_not_raise():
         tracker.record(chunk_id)
 
     assert tracker.is_anomalous("never-seen", config) is False
+
+
+class _FakeEmbedder:
+    """Stands in for src.embeddings.embedder.Embedder -- retrieve() only
+    ever calls embed_one().tolist()."""
+
+    def embed_one(self, text: str):
+        return SimpleNamespace(tolist=lambda: [0.1, 0.2, 0.3])
+
+
+class _ExplodingDetectionPipeline:
+    """A DetectionPipeline stand-in whose score_chunks() always raises --
+    proves enable_detection_scoring=False skips the *call*, not just its
+    triggering threshold (a config that just raised every band above 1.0
+    would still pay this cost every time)."""
+
+    def score_chunks(self, *args, **kwargs):
+        raise AssertionError("score_chunks() must not be called when detection scoring is disabled")
+
+
+def _fake_search_hit(
+    chunk_id: str, trust_tier: TrustTier = TrustTier.UNVERIFIED, score: float = 0.9
+):
+    return SimpleNamespace(
+        id=f"point-{chunk_id}",
+        score=score,
+        payload={
+            "chunk_id": chunk_id,
+            "doc_id": "doc-1",
+            "source_uri": "uri://doc-1",
+            "trust_tier": trust_tier.value,
+            "text": "some chunk text",
+        },
+    )
+
+
+def test_retrieve_skips_detection_pipeline_when_scoring_disabled(monkeypatch):
+    monkeypatch.setattr(policy_engine, "search", lambda *a, **k: [_fake_search_hit("c1")])
+    config = PolicyConfig(enable_detection_scoring=False)
+
+    result = retrieve(
+        "query",
+        config=config,
+        embedder=_FakeEmbedder(),
+        qdrant_client_instance=object(),
+        detection_pipeline=_ExplodingDetectionPipeline(),
+        tracker=FrequencyTracker(),
+    )
+
+    assert len(result.candidates) == 1
+    assert result.candidates[0].chunk_score.poison_score == 0.0
+    assert result.candidates[0].decision == GateDecision.ALLOW
+
+
+def test_retrieve_skips_frequency_tracking_when_disabled(monkeypatch):
+    monkeypatch.setattr(policy_engine, "search", lambda *a, **k: [_fake_search_hit("c1")])
+    config = PolicyConfig(enable_detection_scoring=False, enable_frequency_tracking=False)
+    tracker = FrequencyTracker()
+
+    retrieve(
+        "query",
+        config=config,
+        embedder=_FakeEmbedder(),
+        qdrant_client_instance=object(),
+        detection_pipeline=_ExplodingDetectionPipeline(),
+        tracker=tracker,
+    )
+
+    assert tracker.total_observations == 0
+
+
+def test_retrieve_frequency_tracking_enabled_records_by_default(monkeypatch):
+    monkeypatch.setattr(policy_engine, "search", lambda *a, **k: [_fake_search_hit("c1")])
+    config = PolicyConfig(enable_detection_scoring=False)
+    tracker = FrequencyTracker()
+
+    retrieve(
+        "query",
+        config=config,
+        embedder=_FakeEmbedder(),
+        qdrant_client_instance=object(),
+        detection_pipeline=_ExplodingDetectionPipeline(),
+        tracker=tracker,
+    )
+
+    assert tracker.total_observations == 1

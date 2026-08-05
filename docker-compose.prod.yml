@@ -1,0 +1,99 @@
+# Full-stack production compose: Qdrant + the FastAPI query API + the
+# Streamlit dashboard. `docker compose -f docker-compose.prod.yml up -d --build`
+# (PLAN.md Section 4.1). Deviates from PLAN.md Section 4.3's literal shape in
+# two ways, both flagged per CLAUDE.md's "say so explicitly" rule:
+#   - `api`/`dashboard` build from the repo-root `Dockerfile` with
+#     `target: api` / `target: dashboard` instead of two separate
+#     Dockerfiles -- see the root Dockerfile's own header comment for why.
+#   - `dashboard`'s build context is `.` (repo root), not `./dashboard`,
+#     since dashboard/data.py imports root-level `src.*` modules directly.
+#
+# First-time bootstrap (nothing in this file automates these -- both need a
+# real embedding pass, which belongs in an explicit, watchable step, not a
+# silent container-startup side effect):
+#   docker compose -f docker-compose.prod.yml exec api \
+#     python -m src.vectorstore.qdrant_client upsert
+#   docker compose -f docker-compose.prod.yml exec api \
+#     python eval/run_eval.py --stage detection --skip-judge   # trains+persists models/poison_classifier.joblib
+# Without the second step, retrieve() still works (src/detection/pipeline.py's
+# `fuse_scores` gracefully renormalizes across the remaining signals when no
+# classifier is loaded), just with weaker fused poison-score accuracy.
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: veritasrag-qdrant
+    ports:
+      - "6333:6333" # REST API
+      - "6334:6334" # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+    healthcheck:
+      # The official qdrant/qdrant image ships neither curl nor wget --
+      # confirmed directly against the live image, not assumed -- so this
+      # checks the REST port is accepting TCP connections via bash's /dev/tcp
+      # (bash is present in the image; dash/sh is not enough for this).
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+    image: veritasrag-api:latest
+    container_name: veritasrag-api
+    env_file: .env
+    environment:
+      # Overrides .env's QDRANT_URL=http://localhost:6333 -- inside the
+      # compose network the qdrant service is reachable by its service name,
+      # not localhost. `environment` wins over `env_file` on key conflicts.
+      QDRANT_URL: http://qdrant:6333
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      - veritas_keys:/app/keys # Ed25519 keypair -- must be the SAME volume as dashboard's,
+      - veritas_models:/app/models # so both verify against one provenance key.
+      - veritas_receipts:/app/receipts # Same reasoning: dashboard reads receipts this service writes.
+      - veritas_observability:/app/observability
+      - hf_cache:/app/.cache/huggingface
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dashboard
+    image: veritasrag-dashboard:latest
+    container_name: veritasrag-dashboard
+    env_file: .env
+    environment:
+      QDRANT_URL: http://qdrant:6333
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      api:
+        condition: service_started
+    ports:
+      - "8501:8501"
+    volumes:
+      - veritas_keys:/app/keys # shared with api -- see above
+      - veritas_receipts:/app/receipts # shared with api -- see above
+      - veritas_observability:/app/observability
+      - hf_cache:/app/.cache/huggingface
+    restart: unless-stopped
+
+volumes:
+  qdrant_data:
+  veritas_keys:
+  veritas_models:
+  veritas_receipts:
+  veritas_observability:
+  hf_cache:

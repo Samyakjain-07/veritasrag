@@ -29,6 +29,10 @@ from eval.synthetic_poison_generator import DEFAULT_SEED as NQ_SEED  # noqa: E40
 from eval.synthetic_poison_generator import DEFAULT_SPLIT as NQ_SPLIT  # noqa: E402
 from eval.synthetic_poison_generator import load_nq_subset  # noqa: E402
 from sklearn.metrics import precision_recall_fscore_support  # noqa: E402
+from src.agentic.config import DEFAULT_CONFIG as DEFAULT_AGENTIC_CONFIG  # noqa: E402
+from src.agentic.config import AgenticConfig  # noqa: E402
+from src.agentic.graph import merge_sub_results  # noqa: E402
+from src.agentic.planner import plan_subqueries  # noqa: E402
 from src.detection.classifier import (  # noqa: E402
     DEFAULT_MODEL_PATH,
     build_features,
@@ -49,7 +53,7 @@ from src.generation.config import (  # noqa: E402
 )
 from src.generation.config import DEFAULT_GENERATION_CONFIG as DEFAULT_GEN_CONFIG  # noqa: E402
 from src.generation.faithfulness import FaithfulnessChecker  # noqa: E402
-from src.generation.generate import generate  # noqa: E402
+from src.generation.generate import GenerationResult, generate  # noqa: E402
 from src.generation.llm_client import get_llm  # noqa: E402
 from src.ingestion.provenance import ProvenanceSigner  # noqa: E402
 from src.retrieval.config import DEFAULT_CONFIG as DEFAULT_POLICY_CONFIG  # noqa: E402
@@ -64,6 +68,7 @@ DEFAULT_MANIFEST_PATH = Path("eval/benchmarks/poison_manifest.json")
 DEFAULT_OUTPUT_PATH = Path("eval/benchmarks/detection_eval_results.json")
 DEFAULT_RETRIEVAL_OUTPUT_PATH = Path("eval/benchmarks/retrieval_eval_results.json")
 DEFAULT_GENERATION_OUTPUT_PATH = Path("eval/benchmarks/generation_eval_results.json")
+DEFAULT_AGENTIC_OUTPUT_PATH = Path("eval/benchmarks/agentic_eval_results.json")
 DEFAULT_FULL_REPORT_OUTPUT_PATH = Path("eval/benchmarks/full_report_results.json")
 DEFAULT_UNLEARNING_OUTPUT_PATH = Path("eval/benchmarks/unlearning_eval_results.json")
 UNLEARNING_EVAL_SCRATCH_COLLECTION = "veritasrag_unlearning_eval_scratch"
@@ -305,6 +310,24 @@ def _precision_at_k(chunk_ids: list[str], relevant_chunk_ids: frozenset[str]) ->
         return 0.0
     hits = sum(1 for chunk_id in chunk_ids if chunk_id in relevant_chunk_ids)
     return hits / len(chunk_ids)
+
+
+def _generation_attack_succeeded(
+    generation: GenerationResult, poison_chunk_ids: frozenset[str]
+) -> bool:
+    """True iff a generated claim was NLI-entailed by a poisoned chunk -- the
+    generation-level bar is higher than `_attack_succeeded`'s retrieval-level
+    one: surviving retrieval gating isn't enough, the poison must actually
+    ground part of the final answer. Shared by `run_generation_eval` (Phase
+    5) and `run_agentic_eval` (Phase 8) so this check is never duplicated.
+    """
+    return bool(
+        generation.faithfulness
+        and any(
+            claim.grounded and claim.best_chunk_id in poison_chunk_ids
+            for claim in generation.faithfulness.claims
+        )
+    )
 
 
 def _undefended_chunk_ids(
@@ -594,14 +617,7 @@ def run_generation_eval(
     asr_hits = []
     for i, q in enumerate(asr_queries):
         _, gen = _run_query(q.question)
-        leaked = bool(
-            gen.faithfulness
-            and any(
-                claim.grounded and claim.best_chunk_id in q.poison_chunk_ids
-                for claim in gen.faithfulness.claims
-            )
-        )
-        asr_hits.append(leaked)
+        asr_hits.append(_generation_attack_succeeded(gen, q.poison_chunk_ids))
         if (i + 1) % 5 == 0 or (i + 1) == len(asr_queries):
             print(f"  generation ASR: {i + 1}/{len(asr_queries)}")
 
@@ -651,6 +667,268 @@ def run_generation_eval(
         "config": {
             "generation": asdict(generation_config),
             "faithfulness": asdict(faithfulness_config),
+        },
+        "metrics": metrics,
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
+    print(f"\nWrote results to {output_path}")
+
+    return results
+
+
+def _load_baseline_results(path: Path) -> dict | None:
+    """Load a previously-persisted eval-results JSON file, or None if it
+    doesn't exist yet (e.g. a fresh clone that hasn't run Phase 4/5)."""
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _print_agentic_report(metrics: dict) -> None:
+    print(f"{'avg_subquery_count':<34}{metrics['avg_subquery_count']:>10.2f}")
+    print(
+        f"n_asr_queries={metrics['n_asr_queries']}  "
+        f"n_precision_queries={metrics['n_precision_queries']}"
+    )
+    print()
+
+    retrieval = metrics["retrieval"]
+    print(f"{'retrieval asr (this run)':<34}{retrieval['asr']:>10.3f}")
+    print(f"{'retrieval precision@k (this run)':<34}{retrieval['precision_at_k']:>10.3f}")
+    baseline = retrieval.get("baseline")
+    if baseline is None:
+        print("  (no Phase 4 baseline found at eval/benchmarks/retrieval_eval_results.json)")
+    else:
+        if (
+            baseline["n_asr_queries"] != metrics["n_asr_queries"]
+            or baseline["n_precision_queries"] != metrics["n_precision_queries"]
+        ):
+            print(
+                f"  WARNING: baseline sample sizes differ (n_asr={baseline['n_asr_queries']}, "
+                f"n_precision={baseline['n_precision_queries']}) -- deltas below are not "
+                "strictly apples-to-apples"
+            )
+        print(
+            f"{'  baseline asr':<34}{baseline['asr']:>10.3f}   delta {retrieval['asr_delta']:+.3f}"
+        )
+        print(
+            f"{'  baseline precision@k':<34}{baseline['precision_at_k']:>10.3f}"
+            f"   delta {retrieval['precision_at_k_delta']:+.3f}"
+        )
+
+    print()
+    generation = metrics.get("generation")
+    if generation is None:
+        print("generation stage skipped (--skip-generation)")
+    else:
+        print(f"{'generation asr (this run)':<34}{generation['generation_asr']:>10.3f}")
+        print(
+            f"{'faithfulness precision (this run)':<34}"
+            f"{generation['faithfulness_precision']:>10.3f}"
+        )
+        gen_baseline = generation.get("baseline")
+        if gen_baseline is None:
+            print("  (no Phase 5 baseline found at eval/benchmarks/generation_eval_results.json)")
+        else:
+            print(
+                f"{'  baseline generation asr':<34}{gen_baseline['generation_asr']:>10.3f}"
+                f"   delta {generation['generation_asr_delta']:+.3f}"
+            )
+            print(
+                f"{'  baseline faithfulness precision':<34}"
+                f"{gen_baseline['faithfulness_precision']:>10.3f}"
+                f"   delta {generation['faithfulness_precision_delta']:+.3f}"
+            )
+
+    print()
+    print(metrics["detection_f1_note"])
+
+
+def run_agentic_eval(
+    manifest_path: Path = DEFAULT_MANIFEST_PATH,
+    output_path: Path = DEFAULT_AGENTIC_OUTPUT_PATH,
+    policy_config: PolicyConfig = DEFAULT_POLICY_CONFIG,
+    generation_config: GenerationConfig = DEFAULT_GEN_CONFIG,
+    faithfulness_config: FaithfulnessConfig = DEFAULT_FAITHFULNESS_CONFIG,
+    agentic_config: AgenticConfig = DEFAULT_AGENTIC_CONFIG,
+    asr_sample_size: int | None = None,
+    precision_sample_size: int | None = None,
+    skip_generation: bool = False,
+    seed: int = DEFAULT_SEED,
+) -> dict:
+    """Phase 8 agentic-RAG eval: re-runs the Phase 4/5 poisoning eval through
+    the planner -> parallel retriever agents -> synthesizer pipeline
+    (`src/agentic/{planner,graph}.py`) instead of a single `retrieve()` +
+    `generate()` call, and reports ASR/precision deltas against the
+    persisted Phase 4/5 baselines.
+
+    One combined pass per query, unlike Phase 4/5's split retrieval/
+    generation stages -- every agentic query costs a planner LLM call
+    regardless of which metrics you want, so splitting the stages buys
+    nothing here.
+
+    Detection F1 is NOT re-run or re-reported: `DetectionPipeline` scoring
+    runs identically inside the unchanged `retrieve()` call on every
+    fan-out branch, so Phase 3's persisted `detection_eval_results.json` F1
+    still applies verbatim -- see `detection_f1_note` in the returned dict.
+
+    Expected, correct outcome on this repo's single-hop NQ corpus (not a
+    failed experiment): the planner should mostly degrade to a single
+    sub-query (`avg_subquery_count` close to 1.0), so ASR/precision deltas
+    vs. the Phase 4/5 baselines should sit near zero -- confirming the
+    agentic wrapper doesn't erode Phase 4's defense guarantee, rather than
+    "the agentic layer changed nothing" being a bug.
+
+    `skip_generation=True` runs the planner + parallel-retrieval + merge legs
+    only, with zero LLM calls anywhere -- the live-verifiable path in an
+    environment where `OPENAI_API_KEY` has no billing quota, mirroring
+    `--skip-judge`'s precedent for running a stage without a component that
+    needs unavailable resources.
+    """
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    asr_queries, precision_queries, n_overlap_excluded = build_query_sets(manifest)
+
+    rng = random.Random(seed)
+    if asr_sample_size is not None and asr_sample_size < len(asr_queries):
+        idx = sorted(rng.sample(range(len(asr_queries)), asr_sample_size))
+        asr_queries = [asr_queries[i] for i in idx]
+    if precision_sample_size is not None and precision_sample_size < len(precision_queries):
+        idx = sorted(rng.sample(range(len(precision_queries)), precision_sample_size))
+        precision_queries = [precision_queries[i] for i in idx]
+
+    print(
+        f"Agentic eval: {len(asr_queries)} ASR queries, "
+        f"{len(precision_queries)} precision queries ({n_overlap_excluded} overlap excluded)."
+    )
+
+    embedder = Embedder()
+    client = get_client()
+    tracker = FrequencyTracker()
+    llm = None if skip_generation else get_llm(temperature=generation_config.generation_temperature)
+    faithfulness_checker = None if skip_generation else FaithfulnessChecker(faithfulness_config)
+
+    subquery_counts: list[int] = []
+
+    def _run_agentic_query(question: str) -> tuple[list[str], GenerationResult | None]:
+        sub_queries = plan_subqueries(question, config=agentic_config)
+        subquery_counts.append(len(sub_queries))
+        sub_results = [
+            retrieve(
+                sub_query,
+                config=policy_config,
+                embedder=embedder,
+                qdrant_client_instance=client,
+                tracker=tracker,
+            )
+            for sub_query in sub_queries
+        ]
+        merged = merge_sub_results(question, sub_results, config=policy_config)
+        chunk_ids = [gated.candidate.chunk_id for gated in merged.candidates]
+        generation = None
+        if not skip_generation:
+            generation = generate(
+                question,
+                merged,
+                config=generation_config,
+                faithfulness_config=faithfulness_config,
+                llm=llm,
+                faithfulness_checker=faithfulness_checker,
+            )
+        return chunk_ids, generation
+
+    action = "plan + parallel retrieve + merge" + ("" if skip_generation else " + generate")
+    print(f"Running ASR (attack) queries: {action}...")
+    asr_hits: list[bool] = []
+    generation_asr_hits: list[bool] = []
+    for i, q in enumerate(asr_queries):
+        chunk_ids, generation = _run_agentic_query(q.question)
+        asr_hits.append(_attack_succeeded(chunk_ids, q.poison_chunk_ids))
+        if generation is not None:
+            generation_asr_hits.append(_generation_attack_succeeded(generation, q.poison_chunk_ids))
+        if (i + 1) % 5 == 0 or (i + 1) == len(asr_queries):
+            print(f"  agentic ASR: {i + 1}/{len(asr_queries)}")
+
+    print(f"Running precision (clean) queries: {action}...")
+    precision_scores: list[float] = []
+    faithfulness_scores: list[float] = []
+    for i, q in enumerate(precision_queries):
+        chunk_ids, generation = _run_agentic_query(q.question)
+        precision_scores.append(_precision_at_k(chunk_ids, q.relevant_chunk_ids))
+        if generation is not None and generation.faithfulness is not None:
+            faithfulness_scores.append(generation.faithfulness.faithfulness_score)
+        if (i + 1) % 10 == 0 or (i + 1) == len(precision_queries):
+            print(f"  agentic precision: {i + 1}/{len(precision_queries)}")
+
+    asr = sum(asr_hits) / len(asr_hits) if asr_hits else 0.0
+    precision_at_k = sum(precision_scores) / len(precision_scores) if precision_scores else 0.0
+    avg_subquery_count = fmean(subquery_counts) if subquery_counts else 0.0
+
+    retrieval_metrics: dict = {"asr": asr, "precision_at_k": precision_at_k}
+    retrieval_baseline = _load_baseline_results(DEFAULT_RETRIEVAL_OUTPUT_PATH)
+    if retrieval_baseline is not None and "defended" in retrieval_baseline.get("metrics", {}):
+        defended = retrieval_baseline["metrics"]["defended"]
+        retrieval_metrics["baseline"] = {
+            "asr": defended["asr"],
+            "precision_at_k": defended["precision_at_k"],
+            "n_asr_queries": retrieval_baseline["n_asr_queries"],
+            "n_precision_queries": retrieval_baseline["n_precision_queries"],
+        }
+        retrieval_metrics["asr_delta"] = asr - defended["asr"]
+        retrieval_metrics["precision_at_k_delta"] = precision_at_k - defended["precision_at_k"]
+
+    generation_metrics: dict | None = None
+    if not skip_generation:
+        generation_asr = (
+            sum(generation_asr_hits) / len(generation_asr_hits) if generation_asr_hits else 0.0
+        )
+        faithfulness_precision = (
+            sum(faithfulness_scores) / len(faithfulness_scores) if faithfulness_scores else 0.0
+        )
+        generation_metrics = {
+            "generation_asr": generation_asr,
+            "faithfulness_precision": faithfulness_precision,
+        }
+        generation_baseline = _load_baseline_results(DEFAULT_GENERATION_OUTPUT_PATH)
+        if generation_baseline is not None:
+            baseline_gen_metrics = generation_baseline["metrics"]
+            generation_metrics["baseline"] = {
+                "generation_asr": baseline_gen_metrics["generation_asr"],
+                "faithfulness_precision": baseline_gen_metrics["faithfulness_precision"],
+                "n_asr_queries": baseline_gen_metrics["n_asr_queries"],
+                "n_precision_queries": baseline_gen_metrics["n_precision_queries"],
+            }
+            generation_metrics["generation_asr_delta"] = (
+                generation_asr - baseline_gen_metrics["generation_asr"]
+            )
+            generation_metrics["faithfulness_precision_delta"] = (
+                faithfulness_precision - baseline_gen_metrics["faithfulness_precision"]
+            )
+
+    metrics = {
+        "avg_subquery_count": avg_subquery_count,
+        "n_asr_queries": len(asr_queries),
+        "n_precision_queries": len(precision_queries),
+        "retrieval": retrieval_metrics,
+        "generation": generation_metrics,
+        "detection_f1_note": (
+            "Not re-run: DetectionPipeline scoring runs identically inside the unchanged "
+            "retrieve() call on every fan-out branch, so Phase 3's persisted "
+            "eval/benchmarks/detection_eval_results.json F1 still applies verbatim."
+        ),
+    }
+
+    print()
+    _print_agentic_report(metrics)
+
+    results = {
+        "manifest_path": str(manifest_path),
+        "n_chunks": len(manifest),
+        "n_overlap_excluded": n_overlap_excluded,
+        "skip_generation": skip_generation,
+        "config": {
+            "agentic": asdict(agentic_config),
+            "policy": asdict(policy_config),
         },
         "metrics": metrics,
     }
@@ -929,7 +1207,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--stage",
-        choices=["detection", "retrieval", "generation", "unlearning"],
+        choices=["detection", "retrieval", "generation", "unlearning", "agentic"],
         default="detection",
     )
     parser.add_argument(
@@ -991,6 +1269,33 @@ def main() -> None:
         help="[unlearning] delete only a seeded random subsample instead of "
         "UnlearningConfig.eval_sample_size.",
     )
+    parser.add_argument(
+        "--agentic-asr-sample-size",
+        type=int,
+        default=5,
+        help="[agentic] evaluate only a seeded random subsample of ASR queries instead of "
+        "the full set. Defaults to a small number (unlike every other stage's None=full-set "
+        "default) since a fan-out of up to AgenticConfig.agentic_max_subqueries sub-queries "
+        "multiplies Phase 5's already ~10s/leg retrieval latency; pass 0 or a value >= the "
+        "full query count to run everything.",
+    )
+    parser.add_argument(
+        "--agentic-precision-sample-size",
+        type=int,
+        default=10,
+        help="[agentic] evaluate only a seeded random subsample of precision queries "
+        "instead of the full set. Same small-default reasoning as "
+        "--agentic-asr-sample-size.",
+    )
+    parser.add_argument(
+        "--skip-generation",
+        action="store_true",
+        help="[agentic] run the planner + parallel-retrieval + merge legs only, with zero "
+        "LLM calls anywhere (mirrors --skip-judge's precedent). The live-verifiable path "
+        "in an environment where OPENAI_API_KEY has no billing quota -- without this flag, "
+        "--stage agentic will fail with the same RateLimitError already documented for "
+        "Phase 5/7's generation calls.",
+    )
     args = parser.parse_args()
 
     if args.full_report:
@@ -1029,6 +1334,15 @@ def main() -> None:
             manifest_path=args.manifest,
             output_path=args.output or DEFAULT_UNLEARNING_OUTPUT_PATH,
             sample_size=args.unlearning_sample_size,
+            seed=args.seed,
+        )
+    elif args.stage == "agentic":
+        run_agentic_eval(
+            manifest_path=args.manifest,
+            output_path=args.output or DEFAULT_AGENTIC_OUTPUT_PATH,
+            asr_sample_size=args.agentic_asr_sample_size or None,
+            precision_sample_size=args.agentic_precision_sample_size or None,
+            skip_generation=args.skip_generation,
             seed=args.seed,
         )
     else:

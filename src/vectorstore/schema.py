@@ -6,7 +6,14 @@ from enum import StrEnum
 
 COLLECTION_NAME = "veritasrag_chunks"
 
+# Phase 8: default tenant for every chunk upserted without an explicit
+# tenant_id -- keeps every pre-Phase-8 call site (and the live 280-chunk
+# corpus, until re-upserted) working unmodified under a single implicit
+# tenant, rather than requiring tenant_id everywhere immediately.
+DEFAULT_TENANT_ID = "default"
+
 # Phase 2 schema fields (provenance/trust metadata), per PLAN.md Phase 2.
+# tenant_id added in Phase 8 for multi-tenancy isolation.
 PAYLOAD_FIELDS = (
     "doc_id",
     "chunk_id",
@@ -15,6 +22,7 @@ PAYLOAD_FIELDS = (
     "provenance_signature",
     "ingested_at",
     "content_hash",
+    "tenant_id",
 )
 
 
@@ -43,12 +51,15 @@ def build_payload(
     ingested_at: str,
     content_hash: str,
     text: str,
+    tenant_id: str = DEFAULT_TENANT_ID,
 ) -> dict:
     """Assemble a Qdrant point payload for a chunk.
 
     Includes `text` alongside the Phase 2 provenance/trust schema fields
     (`PAYLOAD_FIELDS`) -- retrieval and generation in later phases need the
-    actual chunk content, not just its provenance metadata.
+    actual chunk content, not just its provenance metadata. `tenant_id`
+    (Phase 8) defaults to `DEFAULT_TENANT_ID` so every pre-Phase-8 call site
+    keeps working unmodified.
     """
     return {
         "doc_id": doc_id,
@@ -59,4 +70,5 @@ def build_payload(
         "ingested_at": ingested_at,
         "content_hash": content_hash,
         "text": text,
+        "tenant_id": tenant_id,
     }

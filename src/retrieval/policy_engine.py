@@ -18,6 +18,13 @@ classifier feature trained on a full-280-chunk-batch-normalized score is
 still evaluated here at a different scale than it was trained on. This is a
 partial mitigation, not a fix; a full fix needs `cluster_anomaly.py` to
 support a fixed/anchored normalization range (Phase 9 territory).
+
+Phase 9: `PolicyConfig.enable_detection_scoring` / `.enable_tier_gating` /
+`.enable_frequency_tracking` let each defensive layer be disabled
+independently -- each one skips that layer's real computation (not just its
+triggering threshold), so `eval/cost_accuracy_sweep.py` can measure an
+honest latency (cost) delta alongside the accuracy delta per layer. All
+three default to `True`, preserving every pre-Phase-9 call site exactly.
 """
 
 from __future__ import annotations
@@ -37,7 +44,7 @@ from src.embeddings.embedder import Embedder
 from src.observability.otel_setup import get_tracer
 from src.retrieval.config import DEFAULT_CONFIG, PolicyConfig
 from src.vectorstore.qdrant_client import get_client, sample_random, search
-from src.vectorstore.schema import TrustTier
+from src.vectorstore.schema import DEFAULT_TENANT_ID, TrustTier
 
 
 @dataclass(frozen=True)
@@ -51,6 +58,7 @@ class RawCandidate:
     trust_tier: TrustTier
     text: str
     similarity_score: float
+    tenant_id: str = DEFAULT_TENANT_ID
 
 
 class GateDecision(StrEnum):
@@ -98,8 +106,15 @@ def _gate(
     at or above the hard-drop threshold it's dropped. Verified's band is
     strictly more permissive than unverified's -- the two signals compound,
     verified content isn't exempt from poison scoring.
+
+    `config.enable_tier_gating=False` (Phase 9) ignores `trust_tier` entirely:
+    no categorical QUARANTINED drop, and every tier falls back to the
+    unverified band uniformly -- isolating "does trust_tier add value on top
+    of poison-score gating" as its own sweepable layer.
     """
-    if trust_tier == TrustTier.QUARANTINED and not config.allow_quarantined_tier:
+    if not config.enable_tier_gating:
+        trust_tier = TrustTier.UNVERIFIED
+    elif trust_tier == TrustTier.QUARANTINED and not config.allow_quarantined_tier:
         return GateDecision.DROP, 0.0, "quarantined_tier"
 
     bands = {
@@ -188,25 +203,43 @@ _detection_pipeline: DetectionPipeline | None = None
 _frequency_tracker = FrequencyTracker()
 _reference_sample: list[str] | None = None
 
+# Phase 8: guards double-checked-locking initialization of the four lazy
+# singletons above. Nothing called retrieve() concurrently before Phase 8's
+# Send-based parallel retriever-agent fan-out (src/agentic/graph.py); a live
+# concurrency test during Phase 8 development confirmed the plain
+# check-then-set below let multiple threads race past `is None`
+# simultaneously and each redundantly construct/load their own
+# Embedder/DetectionPipeline instance (wasted memory and load time, though
+# each thread's own retrieve() call still returned correct, uncorrupted
+# results since each had a fully valid, unshared instance) -- this lock
+# closes that race so exactly one instance is ever constructed.
+_singleton_lock = threading.Lock()
+
 
 def _default_embedder() -> Embedder:
     global _embedder
     if _embedder is None:
-        _embedder = Embedder()
+        with _singleton_lock:
+            if _embedder is None:
+                _embedder = Embedder()
     return _embedder
 
 
 def _default_qdrant_client() -> QdrantClient:
     global _qdrant_client
     if _qdrant_client is None:
-        _qdrant_client = get_client()
+        with _singleton_lock:
+            if _qdrant_client is None:
+                _qdrant_client = get_client()
     return _qdrant_client
 
 
 def _default_detection_pipeline(embedder: Embedder) -> DetectionPipeline:
     global _detection_pipeline
     if _detection_pipeline is None:
-        _detection_pipeline = DetectionPipeline(embedder=embedder)
+        with _singleton_lock:
+            if _detection_pipeline is None:
+                _detection_pipeline = DetectionPipeline(embedder=embedder)
     return _detection_pipeline
 
 
@@ -217,11 +250,15 @@ def _get_reference_sample(client: QdrantClient, config: PolicyConfig) -> list[st
     permanently caching a miss."""
     global _reference_sample
     if _reference_sample is None:
-        points = sample_random(
-            client, config.retrieval_collection_name, config.cluster_reference_sample_size
-        )
-        texts = [point.payload["text"] for point in points if point.payload]
-        _reference_sample = texts or None
+        with _singleton_lock:
+            if _reference_sample is None:
+                points = sample_random(
+                    client,
+                    config.retrieval_collection_name,
+                    config.cluster_reference_sample_size,
+                )
+                texts = [point.payload["text"] for point in points if point.payload]
+                _reference_sample = texts or None
     return _reference_sample
 
 
@@ -285,10 +322,18 @@ def retrieve(
     qdrant_client_instance: QdrantClient | None = None,
     detection_pipeline: DetectionPipeline | None = None,
     tracker: FrequencyTracker | None = None,
+    tenant_id: str | None = None,
 ) -> RetrievalResult:
     """Embed `query`, search Qdrant, live-score candidates for poison, gate on
     trust_tier + poison_score, flag retrieval-frequency anomalies, and return
     up to `config.retrieval_top_k` survivors ranked by adjusted score.
+
+    `tenant_id` (Phase 8) restricts the Qdrant search to a single tenant via
+    `search()`'s server-side filter; `None` (the default) searches across
+    every tenant, preserving pre-Phase-8 behavior exactly. Deliberately not
+    threaded through `RetrievalState`/`retrieve_node`/the FastAPI layer yet --
+    see PROGRESS.md's Phase 8 notes for why (no auth/identity layer exists to
+    populate a trustworthy tenant_id server-side).
 
     No LangGraph dependency -- directly callable and testable on its own.
     `retrieve_node` below is the thin LangGraph adapter.
@@ -309,7 +354,12 @@ def retrieve(
 
         query_vector = embedder.embed_one(query).tolist()
         points = search(
-            client, query_vector, config.retrieval_collection_name, fetch_k, allowed_tiers
+            client,
+            query_vector,
+            config.retrieval_collection_name,
+            fetch_k,
+            allowed_tiers,
+            tenant_id=tenant_id,
         )
 
         raw_candidates = [
@@ -321,6 +371,7 @@ def retrieve(
                 trust_tier=TrustTier(point.payload["trust_tier"]),
                 text=point.payload["text"],
                 similarity_score=point.score,
+                tenant_id=point.payload.get("tenant_id", DEFAULT_TENANT_ID),
             )
             for point in points
         ]
@@ -330,12 +381,33 @@ def retrieve(
                 query=query, candidates=[], fetched_count=0, dropped_count=0, frequency_flags=[]
             )
 
-        reference_texts = _get_reference_sample(client, config)
-        chunk_scores = pipeline.score_chunks(
-            [candidate.text for candidate in raw_candidates],
-            [candidate.chunk_id for candidate in raw_candidates],
-            reference_texts,
-        )
+        if config.enable_detection_scoring:
+            reference_texts = _get_reference_sample(client, config)
+            chunk_scores = pipeline.score_chunks(
+                [candidate.text for candidate in raw_candidates],
+                [candidate.chunk_id for candidate in raw_candidates],
+                reference_texts,
+            )
+        else:
+            # Phase 9: skip DetectionPipeline entirely -- not just its
+            # triggering threshold -- so disabling this layer also skips its
+            # real compute cost (perplexity + cluster-anomaly + classifier
+            # scoring, the single largest per-query latency driver; see
+            # PROGRESS.md's Phase 5/8 latency notes). poison_score=0.0 always
+            # falls below every band, so `_gate` degrades to tier-only.
+            chunk_scores = [
+                ChunkScore(
+                    chunk_id=candidate.chunk_id,
+                    text=candidate.text,
+                    perplexity_raw=0.0,
+                    perplexity_norm=0.0,
+                    cluster_anomaly_raw=0.0,
+                    cluster_anomaly_norm=0.0,
+                    classifier_score=None,
+                    poison_score=0.0,
+                )
+                for candidate in raw_candidates
+            ]
 
         gated: list[GatedCandidate] = []
         for candidate, chunk_score in zip(raw_candidates, chunk_scores, strict=True):
@@ -344,7 +416,7 @@ def retrieve(
             )
 
             frequency_flagged = False
-            if decision != GateDecision.DROP:
+            if decision != GateDecision.DROP and config.enable_frequency_tracking:
                 tracker.record(candidate.chunk_id)
                 frequency_flagged = tracker.is_anomalous(candidate.chunk_id, config)
                 if frequency_flagged and config.frequency_hard_block:

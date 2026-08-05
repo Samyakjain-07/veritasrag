@@ -1,0 +1,47 @@
+# Keep the Docker build context small and never let local secrets/generated
+# artifacts leak into an image layer -- everything here is either dev-only
+# tooling or one of the gitignored generated-artifact dirs (keys/, models/,
+# receipts/, observability/, qdrant_storage/) that get created fresh inside
+# the container (or mounted as a volume) instead.
+
+.git/
+.github/
+
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+.env
+.env.*
+!.env.example
+
+keys/
+models/
+receipts/
+/observability/
+qdrant_storage/
+
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+eval/benchmarks/.judge_cache.json
+eval/benchmarks/figures/
+
+.claude/
+.idea/
+.vscode/
+*:Zone.Identifier
+*.log
+
+*.docx
+*.pptx
+
+Dockerfile
+docker-compose*.yml

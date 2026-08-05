@@ -54,5 +54,11 @@ qdrant_storage/
 .vscode/
 *:Zone.Identifier
 
+# Claude Code local tooling state (permission allowlist, scheduled-task
+# locks) -- machine-local, same category as .idea//.vscode/ above. Not
+# previously listed here (an oversight, not deliberate); CLAUDE.md itself is
+# a real tracked project file and is unaffected by this pattern.
+.claude/
+
 # Logs
 *.log

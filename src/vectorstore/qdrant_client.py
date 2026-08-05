@@ -25,7 +25,7 @@ from qdrant_client import QdrantClient, models
 from src.embeddings.embedder import Embedder
 from src.ingestion.provenance import ProvenanceSigner
 from src.observability.otel_setup import get_tracer
-from src.vectorstore.schema import COLLECTION_NAME, TrustTier, build_payload
+from src.vectorstore.schema import COLLECTION_NAME, DEFAULT_TENANT_ID, TrustTier, build_payload
 
 load_dotenv()
 
@@ -73,8 +73,12 @@ def upsert_manifest(
     collection_name: str = COLLECTION_NAME,
     trust_tier: TrustTier = TrustTier.UNVERIFIED,
     batch_size: int = DEFAULT_BATCH_SIZE,
+    tenant_id: str = DEFAULT_TENANT_ID,
 ) -> int:
     """Embed, sign, and batch-upsert every chunk in a Phase 1 manifest.
+
+    `tenant_id` (Phase 8) tags every point upserted by this call; defaults to
+    `DEFAULT_TENANT_ID` so pre-Phase-8 callers are unaffected.
 
     Returns the number of points upserted.
     """
@@ -83,6 +87,7 @@ def upsert_manifest(
         span.set_attribute("veritasrag.ingestion.batch_size", batch_size)
         span.set_attribute("veritasrag.ingestion.trust_tier", trust_tier.value)
         span.set_attribute("veritasrag.ingestion.collection_name", collection_name)
+        span.set_attribute("veritasrag.ingestion.tenant_id", tenant_id)
 
         ensure_collection(client, collection_name, embedder.dimension)
 
@@ -104,6 +109,7 @@ def upsert_manifest(
                     ingested_at=datetime.now(UTC).isoformat(),
                     content_hash=content_hash,
                     text=entry["text"],
+                    tenant_id=tenant_id,
                 )
                 points.append(
                     models.PointStruct(
@@ -183,22 +189,30 @@ def search(
     collection_name: str = COLLECTION_NAME,
     top_k: int = 10,
     trust_tiers: list[TrustTier] | None = None,
+    tenant_id: str | None = None,
 ) -> list[models.ScoredPoint]:
-    """Cosine-similarity search, optionally restricted to a set of trust tiers.
+    """Cosine-similarity search, optionally restricted to a set of trust tiers
+    and/or a single tenant.
 
     `trust_tiers=None` searches every tier; passing a list applies a
     server-side `trust_tier` filter so excluded tiers never leave Qdrant.
+    `tenant_id=None` (Phase 8) searches across every tenant; passing a value
+    adds a server-side `tenant_id` filter alongside the trust_tier one so
+    another tenant's chunks never leave Qdrant either.
     """
-    query_filter = None
+    must: list[models.FieldCondition] = []
     if trust_tiers is not None:
-        query_filter = models.Filter(
-            must=[
-                models.FieldCondition(
-                    key="trust_tier",
-                    match=models.MatchAny(any=[tier.value for tier in trust_tiers]),
-                )
-            ]
+        must.append(
+            models.FieldCondition(
+                key="trust_tier",
+                match=models.MatchAny(any=[tier.value for tier in trust_tiers]),
+            )
         )
+    if tenant_id is not None:
+        must.append(
+            models.FieldCondition(key="tenant_id", match=models.MatchValue(value=tenant_id))
+        )
+    query_filter = models.Filter(must=must) if must else None
     response = client.query_points(
         collection_name=collection_name,
         query=query_vector,
